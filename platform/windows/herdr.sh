@@ -167,3 +167,33 @@ fm_backend_herdr_current_path() {  # <target>
   case $path in [A-Za-z]:[\\/]*) path=$(cygpath -u -- "$path") ;; esac
   [ -z "$path" ] || printf '%s\n' "$path"
 }
+
+# The presentation lock namespace is private on Linux when it is mode 700 and
+# owned by this user. On a noacl drive mkdir -m sets nothing and stat answers
+# the umask's mode, so here private means the directory's ACL, as
+# private-root.sh judges it: this user, SYSTEM and Administrators, nobody else.
+# An existing namespace that fails that is refused, never repaired, as upstream
+# refuses an existing 755 one. A namespace this shell creates gets that ACL
+# before upstream validates it; a failed apply removes it, so nothing open is
+# left behind to be trusted later.
+fm_backend_herdr_presentation_lock_namespace_valid() {
+  local dir=$1 expected_uid owner
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  expected_uid=$(id -u 2>/dev/null) || return 1
+  owner=$(fm_backend_herdr_presentation_lock_namespace_uid "$dir") || return 1
+  [ "$owner" = "$expected_uid" ] || return 1
+  bash "${FM_PLATFORM_OVERLAY%/*}/private-root.sh" check "$dir" >/dev/null 2>&1
+}
+
+_fm_win_herdr_keep_upstream fm_backend_herdr_presentation_session_lock_path
+fm_backend_herdr_presentation_session_lock_path() {  # <session>
+  local dir
+  dir=$(fm_backend_herdr_presentation_lock_namespace) || return 1
+  # ponytail: a second shell that loses the mkdir race validates before the
+  # winner's apply lands and reports the lock unavailable for that one call.
+  if [ -n "$dir" ] && [ ! -e "$dir" ] && [ ! -L "$dir" ] && mkdir "$dir" 2>/dev/null; then
+    bash "${FM_PLATFORM_OVERLAY%/*}/private-root.sh" apply "$dir" >/dev/null 2>&1 \
+      || { rmdir "$dir" 2>/dev/null; return 1; }
+  fi
+  _fm_win_upstream_fm_backend_herdr_presentation_session_lock_path "$@"
+}
