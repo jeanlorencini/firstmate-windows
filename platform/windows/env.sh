@@ -36,6 +36,14 @@ PATH=$_fm_win_dir/bin:${_fm_win_path%:}
 # shellcheck source=platform/windows/jq.sh
 . "$_fm_win_dir/jq.sh" "$_fm_win_dir/bin"
 
+# Claude Code's Bash tool runs each command as a LOGIN shell, and Git's own
+# /etc/profile rebuilds PATH ahead of this overlay's bin/, so PATH alone does
+# not make bin/curl win there. An exported function does: bash resolves a
+# function before PATH, and `export -f` carries it through the environment
+# to any child shell, login or not.
+curl() { "$_fm_win_dir/bin/curl" "$@"; }
+export -f curl
+
 _fm_win_msys=
 for _fm_win_word in ${MSYS:-}; do
   case $_fm_win_word in winsymlinks*) ;; *) _fm_win_msys="$_fm_win_msys $_fm_win_word" ;; esac
