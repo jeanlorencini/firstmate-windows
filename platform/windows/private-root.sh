@@ -7,7 +7,11 @@
 # private when every entry of its ACL names this user, SYSTEM or
 # Administrators, the same set that can read a 0700 directory on Linux.
 #
-# check prints "private <dir>" or "open <dir>: <principal>..." and exits 1 when
+# icacls prints account names in the interface language, so the check reads
+# the DACL as SDDL (icacls /save), where every principal is a SID: SY is
+# SYSTEM, BA is Administrators and the user is the S-1-5-21-... whoami reports.
+#
+# check prints "private <dir>" or "open <dir>: <sid> <ace>..." and exits 1 when
 # any root is open. apply replaces an open root's ACL with that set, inherited
 # by everything beneath it, which needs no admin because the user owns it.
 set -u
@@ -16,23 +20,26 @@ mode=${1:-}
 case $mode in check | apply) shift ;; *) echo "usage: $0 check|apply <dir>..." >&2; exit 2 ;; esac
 [ $# -gt 0 ] || { echo "usage: $0 check|apply <dir>..." >&2; exit 2; }
 
-me="$USERDOMAIN\\$USERNAME"
+# /usr/bin/whoami is GNU's; the SID comes from the Windows one.
+me=$(MSYS2_ARG_CONV_EXCL='*' "$(cygpath -u -- "$SYSTEMROOT")/System32/whoami.exe" /user /fo csv /nh 2>/dev/null)
+me=${me##*,\"}; me=${me%%\"*}
 
 acl_outsiders() {
-  local out line entry who entries=0
-  out=$(MSYS2_ARG_CONV_EXCL='*' icacls "$1" 2>&1) || { echo unreadable-acl; return 0; }
-  while IFS= read -r line; do
-    line=${line//$'\r'/}
-    case $line in *':('*) ;; *) continue ;; esac
+  local sddl ace sid entries=0 tmp
+  tmp=$(mktemp) || { echo unreadable-acl; return 0; }
+  # /save writes "<path>\r\n<sddl>\r\n" in UTF-16LE; the SDDL is ASCII, so
+  # dropping the NULs decodes it.
+  sddl=$(MSYS2_ARG_CONV_EXCL='*' icacls "$1" /save "$(cygpath -w -- "$tmp")" >/dev/null 2>&1 \
+    && tr -d '\0\r' < "$tmp" | sed -n 2p)
+  rm -f "$tmp"
+  case $sddl in D:*'('*) sddl=${sddl#*(}; sddl=${sddl%)} ;; *) sddl= ;; esac
+  while IFS= read -r ace; do
+    [ -n "$ace" ] || continue
     entries=$((entries + 1))
-    entry=${line#"$1"}
-    entry=${entry#"${entry%%[! ]*}"}
-    who=${entry%%:(*}
-    case $who in
-      "NT AUTHORITY\\SYSTEM" | "BUILTIN\\Administrators" | "$me") continue ;;
-    esac
-    printf '%s %s\n' "$who" "${entry#"$who":}"
-  done <<< "$out"
+    sid=${ace##*;}
+    case $sid in SY | S-1-5-18 | BA | S-1-5-32-544 | "$me") continue ;; esac
+    printf '%s %s\n' "$sid" "${ace%;;;*}"
+  done <<< "${sddl//)(/$'\n'}"
   [ "$entries" -gt 0 ] || echo unreadable-acl
 }
 
@@ -44,7 +51,7 @@ for dir in "$@"; do
   if [ -n "$open" ] && [ "$mode" = apply ]; then
     if ! { MSYS2_ARG_CONV_EXCL='*' icacls "$win" /reset >/dev/null \
       && MSYS2_ARG_CONV_EXCL='*' icacls "$win" /inheritance:r /grant:r \
-        "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "$me:(OI)(CI)F" >/dev/null; }; then
+        "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*$me:(OI)(CI)F" >/dev/null; }; then
       rc=1
       continue
     fi

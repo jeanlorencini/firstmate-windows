@@ -70,4 +70,18 @@ mkdir -p "$T/granted"
 MSYS2_ARG_CONV_EXCL='*' icacls "$(cygpath -w "$T/granted")" /grant '*S-1-5-32-545:(OI)(CI)R' '*S-1-3-0:(OI)(CI)(IO)F' > /dev/null
 expect "apply makes a root with its own grants private" "private $T/granted" "$(clean bash platform/windows/private-root.sh apply "$T/granted" 2>&1)"
 
+# Principals are matched by SID, so these hold in any interface language.
+mkdir -p "$T/sid" "$T/inherit"
+MSYS2_ARG_CONV_EXCL='*' icacls "$(cygpath -w "$T/sid")" /grant '*S-1-1-0:(OI)(CI)F' > /dev/null
+expect "apply makes a root granted to Everyone private" "private $T/sid" "$(clean bash platform/windows/private-root.sh apply "$T/sid" 2>&1)"
+expect "check passes an applied root" "rc=0" "$(rc_of "$PATH" "$T/sid")"
+MSYS2_ARG_CONV_EXCL='*' icacls "$(cygpath -w "$T/sid")" /grant '*S-1-1-0:(OI)(CI)F' > /dev/null
+expect "a grant to Everyone by SID reads open" "open $T/sid: WD " "$(clean bash platform/windows/private-root.sh check "$T/sid" 2>&1)"
+# A root inheriting %TEMP%'s ACL reads whatever its SIDs say; Get-Acl is the oracle.
+want=$(FM_T_DIR=$(cygpath -w "$T/inherit") pwsh -NoProfile -NonInteractive -c '
+$ok = "S-1-5-18", "S-1-5-32-544", [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$bad = (Get-Acl -LiteralPath $env:FM_T_DIR).Access | Where-Object { $ok -notcontains $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
+if ($bad) { "rc=1" } else { "rc=0" }' | tr -d '\r')
+expect "a root inheriting %TEMP%'s ACL reads as its SIDs say ($want)" "$want" "$(rc_of "$PATH" "$T/inherit")"
+
 [ "$fails" -eq 0 ]
