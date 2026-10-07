@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# curl here is the native mingw64 build, which cannot open an MSYS /dev/fd/N,
+# so `-H @/dev/fd/3` (the bearer header fm-dispatch-resolve.sh passes) fails
+# with rc 26 before any request leaves. Copy each @/dev/fd/N argument into a
+# fresh directory that private-root.sh has made private (%TEMP% can grant other
+# accounts access), pass that file instead, and remove the directory after.
+self=${BASH_SOURCE[0]%/*}
+real=
+IFS=: read -r -a dirs <<< "$PATH"
+for d in "${dirs[@]}"; do
+  [ -n "$d" ] && [ ! "$d" -ef "$self" ] && [ -x "$d/curl" ] && { real=$d/curl; break; }
+done
+[ -n "$real" ] || { echo "curl: not found on PATH" >&2; exit 127; }
+case " $* " in *' @/dev/fd/'*) ;; *) exec "$real" "$@" ;; esac
+priv=$(mktemp -d) || exit 26
+trap 'rm -rf "$priv"' EXIT
+bash "$self/../private-root.sh" apply "$priv" >/dev/null 2>&1 || exit 26
+args=() n=0
+for a in "$@"; do
+  case $a in
+    @/dev/fd/*) n=$((n + 1)); cat "${a#@}" > "$priv/$n" || exit 26; a=@$priv/$n ;;
+  esac
+  args+=("$a")
+done
+"$real" "${args[@]}"
