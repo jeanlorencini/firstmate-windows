@@ -6,15 +6,18 @@ cd "$ROOT" || exit 1
 
 T=$(mktemp -d /tmp/fm-win-claude.XXXXXX)
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/home/bin" "$T/home/platform" "$T/native" "$T/msys" "$T/elsewhere"
+mkdir -p "$T/home/bin" "$T/home/platform" "$T/native" "$T/msys" "$T/elsewhere" "$T/npm/node_modules/@anthropic-ai/claude-code/bin"
 cp -r platform/windows "$T/home/platform/windows"
 : > "$T/home/bin/fm-lock.sh"
 cp "$(cygpath -u "$COMSPEC")" "$T/native/claude.exe"
 cp /usr/bin/env.exe "$T/msys/claude.exe"
+# An npm install: only the cmd shim is on PATH; the exe sits beside it under node_modules.
+cp "$(cygpath -u "$COMSPEC")" "$T/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+printf '%s\r\n' '@ECHO off' '"%~dp0\node_modules\@anthropic-ai\claude-code\bin\claude.exe" %*' > "$T/npm/claude.cmd"
 printf '%s\n' '. $env:FM_T_PS1' 'Set-Location -LiteralPath $env:FM_T_DIR' 'if ($env:FM_T_PIPE) { $env:FM_T_PIPE | claude @args } else { claude @args }' '"rc=$LASTEXITCODE"' > "$T/run.ps1"
 cat > "$T/report.sh" << EOF
 o=off; [ -n "\${FM_PLATFORM_OVERLAY:-}" ] && [ "\$FM_PLATFORM_OVERLAY" -ef "$T/home/platform/windows/overrides.sh" ] && o=on
-m=none; for p in /proc/[0-9]*; do [ "\$(cat "\$p/exename" 2> /dev/null)" = "$T/native/claude" ] && m=msys; done
+m=none; for p in /proc/[0-9]*; do e=\$(cat "\$p/exename" 2> /dev/null); case \$e in "$T"/*) m=\${e#"$T"/} ;; esac; done
 echo "overlay=\$o umask=\$(umask) claude_pid=\$m"
 EOF
 report=$(cygpath -w "$T/report.sh")
@@ -35,11 +38,14 @@ pwsh_claude() {
 }
 
 expect "in a firstmate home claude runs under the overlay with an MSYS pid" \
-  "overlay=on umask=0077 claude_pid=msys rc=0" \
+  "overlay=on umask=0077 claude_pid=native/claude rc=0" \
   "$(pwsh_claude "$T/native" "$T/home" /d /c bash "$report")"
 expect "outside a home claude is the plain executable" \
   "overlay=off umask=0022 claude_pid=none rc=0" \
   "$(pwsh_claude "$T/native" "$T/elsewhere" /d /c bash "$report")"
+expect "an npm shim on PATH starts the claude.exe beside it as bash's own child" \
+  "overlay=on claude_pid=npm/node_modules/@anthropic-ai/claude-code/bin/claude rc=0" \
+  "$(pwsh_claude "$T/npm" "$T/home" /d /c bash "$report" | sed 's/ umask=[0-9]*//')"
 expect "arguments reach claude unchanged" \
   '[a b][c"d][] rc=0' \
   "$(pwsh_claude "$T/msys" "$T/home" sh -c 'printf "[%s]" "$@"; echo' _ 'a b' 'c"d' '')"
