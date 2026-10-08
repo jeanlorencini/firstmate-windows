@@ -32,8 +32,10 @@ DISPATCH_ROUTE='first classify the work under the AGENTS.md intake contract, the
 # not ship that Claude-only permissions layer.
 DELEGATION_TOOLS='Task Agent Workflow RemoteTrigger Monitor ScheduleWakeup SendMessage EnterWorktree ExitWorktree CronCreate CronDelete CronList TaskCreate TaskGet TaskList TaskUpdate TaskStop TaskOutput'
 
-# Tools that must stay available: denying these would break ordinary work.
-PRESERVED_TOOLS='Bash Edit Read Write Skill ToolSearch WebFetch WebSearch NotebookEdit ReportFindings DesignSync PushNotification'
+# Tools that must stay available by name alone: denying these would break
+# ordinary work. Bash and PowerShell still reach the classifier so their
+# command text can be checked; --tool without a command stays allowed.
+PRESERVED_TOOLS='Bash PowerShell Edit Read Write Skill ToolSearch WebFetch WebSearch NotebookEdit ReportFindings DesignSync PushNotification'
 
 # Session-local todo-list tools. They match a delegation stem but create no
 # runnable work, so the guard's plan-only exclusion must allow them.
@@ -54,6 +56,36 @@ run_tool() {
   env FM_ROOT_OVERRIDE="$PRIMARY" FM_HOME="$PRIMARY" FM_STATE_OVERRIDE="$STATE" "$@" \
     "$CHECK" --claude --tool "$tool" > "$OUT" 2> "$ERR" || rc=$?
   return "$rc"
+}
+
+run_command() {
+  local label=$1 command=$2 rc=0
+  shift 2
+  : > "$OUT"
+  : > "$ERR"
+  env FM_ROOT_OVERRIDE="$PRIMARY" FM_HOME="$PRIMARY" FM_STATE_OVERRIDE="$STATE" "$@" \
+    "$CHECK" --claude --command "$command" > "$OUT" 2> "$ERR" || rc=$?
+  return "$rc"
+}
+
+expect_command_allow() {
+  local label=$1 command=$2 rc=0
+  shift 2
+  run_command "$label" "$command" "$@" || rc=$?
+  [ "$rc" -eq 0 ] || fail "$label must allow, got exit $rc: $(cat "$ERR")"
+  [ ! -s "$OUT" ] || fail "$label allow wrote stdout: $(cat "$OUT")"
+  [ ! -s "$ERR" ] || fail "$label allow wrote stderr: $(cat "$ERR")"
+}
+
+expect_command_deny() {
+  local label=$1 command=$2 rc=0
+  run_command "$label" "$command" || rc=$?
+  [ "$rc" -eq 2 ] || fail "$label must deny with exit 2, got $rc: $(cat "$ERR")"
+  [ ! -s "$OUT" ] || fail "$label deny wrote stdout: $(cat "$OUT")"
+  jq -e '.hookSpecificOutput.hookEventName == "PreToolUse" and .hookSpecificOutput.permissionDecision == "deny"' "$ERR" >/dev/null 2>&1 \
+    || fail "$label deny omitted Claude's permission decision: $(cat "$ERR")"
+  jq -e '.systemMessage | startswith("[subagent-dispatch]") and contains("blocked tool: Bash") and contains("agent-cli launch")' "$ERR" >/dev/null 2>&1 \
+    || fail "$label deny message lost its code or agent-cli mark: $(jq -r '.systemMessage' "$ERR")"
 }
 
 expect_allow() {
@@ -377,6 +409,34 @@ test_escape_hatch_allows_deliberate_use() {
   pass "the single documented escape hatch releases the guard only on the exact opt-in value"
 }
 
+test_shell_denies_direct_harness_agent_cli_launches() {
+  # The escaped research shape that bypassed the name-only guard: a backgrounded
+  # codex exec reading a prompt file. Also cover the other common launch forms.
+  expect_command_deny "backgrounded codex exec" \
+    'codex exec -m chatgpt-web/gpt-6-sol --dangerously-bypass-approvals-and-sandbox - < prompt.txt &'
+  expect_command_deny "claude print" 'claude -p "summarize the repo"'
+  expect_command_deny "claude long print" 'claude --print "look around"'
+  expect_command_deny "opencode run" 'opencode run "investigate the flake"'
+  expect_command_deny "gemini print" 'gemini -p "what broke"'
+  expect_command_deny "bare grok launch" 'grok'
+  expect_command_deny "cursor-agent launch" 'cursor-agent -p "ship it"'
+  expect_command_deny "bash -c nested codex" "bash -c 'codex exec \"do research\"'"
+  pass "the shell seatbelt denies direct harness agent-CLI launches, including the escaped backgrounded codex exec shape"
+}
+
+test_shell_allows_queries_and_fm_scripts() {
+  expect_command_allow "codex version" 'codex --version'
+  expect_command_allow "claude help" 'claude --help'
+  expect_command_allow "opencode help" 'opencode -h'
+  expect_command_allow "claude auth status" 'claude auth status'
+  expect_command_allow "gemini version" 'gemini --version'
+  expect_command_allow "fm-spawn launch" 'bin/fm-spawn.sh --scout research-01'
+  expect_command_allow "fm-brief scaffold" 'bin/fm-brief.sh ship demo'
+  expect_command_allow "ordinary shell" 'ls projects data 2>&1'
+  expect_command_allow "escape hatch on launch" 'codex exec do-it' FM_ALLOW_SUBAGENT=1
+  pass "the shell seatbelt allows CLI queries, bin/fm-* scripts, ordinary commands, and the escape hatch"
+}
+
 test_task_worktree_and_non_firstmate_repo_are_inert() {
   local child="$TMP_ROOT/child" plain="$TMP_ROOT/plain" rc=0
   git -C "$PRIMARY" config user.name fixture
@@ -393,6 +453,14 @@ test_task_worktree_and_non_firstmate_repo_are_inert() {
   [ "$rc" -eq 0 ] || fail "a crewmate task worktree must be out of scope, got exit $rc: $(cat "$ERR")"
   [ ! -s "$OUT" ] || fail "task-worktree no-op wrote stdout: $(cat "$OUT")"
   [ ! -s "$ERR" ] || fail "task-worktree no-op wrote stderr: $(cat "$ERR")"
+
+  rc=0
+  : > "$OUT"; : > "$ERR"
+  FM_ROOT_OVERRIDE="$child" FM_HOME="$child" FM_STATE_OVERRIDE="$child/state" \
+    "$CHECK" --claude --command 'codex exec do research' > "$OUT" 2> "$ERR" || rc=$?
+  [ "$rc" -eq 0 ] || fail "a crewmate task worktree must stay inert for agent-CLI shell commands, got exit $rc: $(cat "$ERR")"
+  [ ! -s "$OUT" ] || fail "task-worktree shell no-op wrote stdout: $(cat "$OUT")"
+  [ ! -s "$ERR" ] || fail "task-worktree shell no-op wrote stderr: $(cat "$ERR")"
 
   mkdir -p "$plain/bin"
   git -C "$plain" init -q
@@ -484,12 +552,15 @@ TRACKED="$TMP_ROOT/tracked"
 mkdir -p "$TRACKED/bin" "$TRACKED/state"
 printf '# fixture\n' > "$TRACKED/AGENTS.md"
 git -C "$TRACKED" init -q
-cp "$ROOT/bin/fm-subagent-pretool-check.sh" "$ROOT/bin/fm-primary-scope-lib.sh" "$TRACKED/bin/"
+cp "$ROOT/bin/fm-subagent-pretool-check.sh" "$ROOT/bin/fm-primary-scope-lib.sh" \
+  "$ROOT/bin/fm-hook-host-lib.sh" \
+  "$ROOT/bin/fm-subagent-command-policy.mjs" "$ROOT/bin/fm-arm-command-policy.mjs" \
+  "$TRACKED/bin/"
 write_skill "$TRACKED/.claude/skills/forky/SKILL.md" 'name: forky' 'description: probe' 'context: fork'
 
 # Tool names Claude Code offers a primary, plus delegation-shaped and future
 # names. The matcher may skip a name only when the classifier allows it.
-MATCHER_PROBE_TOOLS="$PRESERVED_TOOLS $DELEGATION_TOOLS Glob Grep LS MultiEdit PowerShell TodoWrite BashOutput KillShell ExitPlanMode AskUserQuestion mcp__linear__list_issues mcp__acme__spawn_agent SubagentCreate SpawnWorker Read_Agent ReadAgent Bash2 XRead"
+MATCHER_PROBE_TOOLS="$PRESERVED_TOOLS $DELEGATION_TOOLS Glob Grep LS MultiEdit TodoWrite BashOutput KillShell ExitPlanMode AskUserQuestion mcp__linear__list_issues mcp__acme__spawn_agent SubagentCreate SpawnWorker Read_Agent ReadAgent Bash2 XRead"
 
 run_tracked_tool() {  # <tool> <tool-input-json>
   local payload rc=0
@@ -505,13 +576,16 @@ test_tracked_matcher_skips_only_always_allowed_names() {
     skipped="$skipped $tool"
     expect_allow "matcher-skipped tool" "$tool"
   done
-  for tool in Agent Task SendMessage EnterWorktree CronCreate Workflow Monitor Skill SubagentCreate SpawnWorker ReadAgent Read_Agent XRead Bash2; do
+  for tool in Agent Task SendMessage EnterWorktree CronCreate Workflow Monitor Skill Bash PowerShell SubagentCreate SpawnWorker ReadAgent Read_Agent XRead Bash2; do
     fm_tracked_pretool_matches fm-subagent-pretool-check.sh "$tool" \
       || fail "the tracked matcher must hand $tool to the classifier"
   done
   matcher=$(jq -r '.hooks.PreToolUse[] | select(any(.hooks[].command; contains("/bin/fm-subagent-pretool-check.sh "))) | .matcher' "$ROOT/.claude/settings.json")
   excluded=$(printf '%s' "$matcher" | sed -n 's/^\^(?!(?:\([A-Za-z|]*\))\$|mcp__)\.\*$/\1/p')
   [ -n "$excluded" ] || fail "the tracked matcher must be the exact-name exclusion form: $matcher"
+  case "|$excluded|" in
+    *'|Bash|'*|*'|PowerShell|'*) fail "Bash/PowerShell must reach the classifier for command-text checks: $excluded" ;;
+  esac
   # An excluded name must be allowed whatever its input says, so each one is
   # sent with the input of a skill that forks.
   for tool in ${excluded//|/ }; do
@@ -548,6 +622,10 @@ Read|allow||{"file_path":"/c/fm/AGENTS.md"}
 Grep|allow||{"pattern":"fm_spawn","path":"bin","output_mode":"content"}
 Glob|allow||{"pattern":"**/*.sh"}
 Bash|allow||{"command":"ls projects data 2>&1","description":"List projects"}
+Bash|allow||{"command":"codex --version","description":"Check codex"}
+Bash|allow||{"command":"bin/fm-spawn.sh --scout x","description":"Fleet spawn"}
+Bash|deny|agent-cli launch (agent-cli-launch)|{"command":"codex exec -m chatgpt-web/gpt-6-sol - < prompt.txt &","description":"Hidden research"}
+PowerShell|deny|agent-cli launch (agent-cli-launch)|{"command":"claude -p do research","description":"Hidden claude"}
 Skill|allow||{"skill":"project-management"}
 Skill|deny|skill "forky" runs in a forked subagent context|{"skill":"forky"}
 ToolSearch|allow||{"query":"select:Agent","tool_name":"Agent"}
@@ -578,6 +656,8 @@ test_file_skill_named_like_a_built_in_is_judged_by_its_frontmatter
 test_inline_skill_call_starts_no_git
 test_deny_message_names_the_real_dispatch_paths
 test_escape_hatch_allows_deliberate_use
+test_shell_denies_direct_harness_agent_cli_launches
+test_shell_allows_queries_and_fm_scripts
 test_task_worktree_and_non_firstmate_repo_are_inert
 test_secondmate_home_is_in_scope
 test_stdin_transports_and_output_shapes

@@ -18,33 +18,44 @@
 # harness-agnostic, and tracked project settings propagate into linked
 # worktrees where they disarm legitimate crewmates.
 # The tracked Claude matcher hands every tool name to this script except an
-# exact-name list of everyday tools this script always allows and MCP tools,
-# which it never classifies, so a hook process starts for none of them. It never
-# enumerates delegation stems: that would reintroduce the fail-open-by-
+# exact-name list of everyday non-shell tools this script always allows and MCP
+# tools, which it never classifies, so a hook process starts for none of them.
+# Bash and PowerShell reach this script so their command text can be checked.
+# It never enumerates delegation stems: that would reintroduce the fail-open-by-
 # enumeration problem this guard exists to solve, because any future tool name
 # outside the matcher would never reach this script.
 # This script is therefore the single owner of classification.
-# It classifies a known tool by what that tool does (tool_effect) and any other
-# name by its delegation SHAPE rather than a fixed list, so a future tool that
-# ships before anyone updates a local deny list is still refused.
+# It classifies a known tool by what that tool does (tool_effect), a shell tool
+# by whether its command launches a harness agent CLI, and any other name by its
+# delegation SHAPE rather than a fixed list, so a future tool that ships before
+# anyone updates a local deny list is still refused.
 #
-# The guard is narrow by design. It classifies ONE thing: whether the tool call
-# starts work the fleet would not know about. It makes no judgment about whether
-# the work should be delegated at all, which is a reasoning boundary no
+# The guard is narrow by design. It classifies TWO surfaces that start work the
+# fleet would not know about: a delegation-SHAPED tool name, and a shell tool
+# command that launches a harness agent CLI directly. It makes no judgment about
+# whether the work should be delegated at all, which is a reasoning boundary no
 # tool-shape hook can enforce.
+# The shell-command check reuses the tokenizer in bin/fm-arm-command-policy.mjs
+# through bin/fm-subagent-command-policy.mjs. It is a seatbelt: a script file or
+# variable-built command can still evade the command-text check.
 # See docs/subagent-guard.md for the complete contract and validation record.
 #
 # Usage:
 #   <PreToolUse JSON on stdin> | bin/fm-subagent-pretool-check.sh
 #   bin/fm-subagent-pretool-check.sh --tool '<tool-name>'
+#   bin/fm-subagent-pretool-check.sh --command '<cmd>'
 #
-# Stdin mode extracts .tool_name for Claude and Codex, or .toolName for Grok.
-# CLI mode is for adapters that already hold the tool name (OpenCode, Pi).
+# Stdin mode extracts .tool_name for Claude and Codex, or .toolName for Grok,
+# and for shell tools also .tool_input.command / .toolInput.command.
+# --tool mode is for adapters that already hold the tool name (OpenCode, Pi).
+# --command mode classifies a shell command string the same way stdin does for
+# Bash / PowerShell / Shell.
 #
 # Exit/output contract (identical shape to bin/fm-cd-pretool-check.sh):
 #   ALLOW - exit 0 and no output.
 #   DENY - exit 2, a Claude-shaped deny object on stderr, and a Grok-shaped
 #          deny object on stdout unless --claude was supplied.
+#   DENY, --cursor - exit 0 and Cursor's own decision object on stdout.
 #   INERT - not a genuine primary home (a crewmate/scout task worktree or a
 #           non-firstmate repo): exit 0 with no output, exactly like ALLOW.
 #   ESCAPE - FM_ALLOW_SUBAGENT=1 in the environment allows deliberately.
@@ -54,6 +65,7 @@
 # Codex blocks on exit 2 and displays stderr.
 # Grok consumes the stdout decision object.
 # OpenCode and Pi consume exit 2 plus stderr.
+# Cursor consumes the stdout decision object.
 set -u
 
 # Lowercase substrings that mark a tool name as delegation-shaped: it creates
@@ -182,26 +194,32 @@ context_line_forks() {  # <line>
 
 TOOL=""
 SKILL=""
+CMD=""
 TOOL_SET=0
+CMD_SET=0
 CLAUDE_MODE=0
+CURSOR_MODE=0
+SHELL_EFFECT=0
 
 usage() {
   cat <<'EOF'
-Usage: fm-subagent-pretool-check.sh [--tool <tool-name>] [--claude]
+Usage: fm-subagent-pretool-check.sh [--tool <tool-name>] [--command <cmd>] [--claude|--cursor]
 
-With no --tool, reads a PreToolUse-style JSON payload on stdin (Claude/Codex
-tool_name, or Grok toolName).
-Denies a delegation-SHAPED tool name in a genuine primary home.
+With no --tool/--command, reads a PreToolUse-style JSON payload on stdin
+(Claude/Codex tool_name, or Grok toolName; shell tools also carry command).
+Denies a delegation-SHAPED tool name, or a shell command that launches a
+harness agent CLI directly, in a genuine primary home.
 Claude primaries may also add an untracked per-home permissions.deny list that
 removes known delegation tools from the model schema before this hook is needed.
 Do not ship that Claude-only list in tracked project settings, because linked
 worktrees inherit it and legitimate crewmates would lose their delegation tools.
 This hook remains as the shipped guard for future delegation-shaped names
-outside any local fixed list.
+outside any local fixed list, and for shell-tool agent-CLI launches.
 Fires only in a genuine firstmate primary home; it is a silent no-op in a
 crewmate/scout task worktree or any non-firstmate repo, where a worker using
 delegation tools is legitimate.
 Exits 0 to allow and 2 to deny, naming the real crewmate dispatch path instead.
+With --cursor, a deny is Cursor's own decision object on stdout and exit 0.
 Set FM_ALLOW_SUBAGENT=1 in the session environment to allow deliberately.
 Malformed transport fails open.
 EOF
@@ -220,8 +238,23 @@ while [ "$#" -gt 0 ]; do
       TOOL_SET=1
       shift
       ;;
+    --command)
+      [ "$#" -gt 1 ] || { echo "error: --command requires a value" >&2; exit 2; }
+      CMD=$2
+      CMD_SET=1
+      shift 2
+      ;;
+    --command=*)
+      CMD=${1#--command=}
+      CMD_SET=1
+      shift
+      ;;
     --claude)
       CLAUDE_MODE=1
+      shift
+      ;;
+    --cursor)
+      CURSOR_MODE=1
       shift
       ;;
     -h|--help)
@@ -236,16 +269,38 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "$TOOL_SET" -eq 0 ]; then
+case ${BASH_SOURCE[0]} in
+  */*) SCRIPT_DIR=${BASH_SOURCE[0]%/*} ;;
+  *) SCRIPT_DIR=. ;;
+esac
+
+if [ "$CMD_SET" -eq 1 ]; then
+  # OpenCode / Pi / Cursor adapters already hold the shell command string.
+  [ -n "$TOOL" ] || TOOL=Bash
+  SHELL_EFFECT=1
+elif [ "$TOOL_SET" -eq 0 ]; then
   PAYLOAD=$(cat 2>/dev/null || true)
   [ -n "$PAYLOAD" ] || exit 0
   command -v jq >/dev/null 2>&1 || exit 0
+  # Cursor's own registration passes --cursor. Without it a Cursor-delivered
+  # payload is the Claude-settings duplicate Cursor also loads, already
+  # evaluated by that registration, so this copy allows without re-classifying.
+  if [ "$CURSOR_MODE" -eq 0 ]; then
+    # shellcheck source=bin/fm-hook-host-lib.sh
+    . "$SCRIPT_DIR/fm-hook-host-lib.sh"
+    if fm_hook_payload_is_foreign_host "$PAYLOAD"; then
+      exit 0
+    fi
+  fi
   # Claude Code trims the skill name, then strips one leading slash.
   FIELDS=$(printf '%s' "$PAYLOAD" | jq -r '(.tool_input.skill? // .toolInput.skill? // "" | tostring | gsub("^[\\s\\x{FEFF}]+|[\\s\\x{FEFF}]+$"; "")) as $skill
-    | [(.tool_name // .toolName // "" | tostring), $skill] | @tsv' 2>/dev/null) || exit 0
+    | (.toolInput.command // .tool_input.command // "" | tostring) as $command
+    | [(.tool_name // .toolName // "" | tostring), $skill, $command] | @tsv' 2>/dev/null) || exit 0
   FIELDS=${FIELDS%$'\r'}
   TOOL=${FIELDS%%$'\t'*}
-  SKILL=${FIELDS#*$'\t'}
+  REST=${FIELDS#*$'\t'}
+  SKILL=${REST%%$'\t'*}
+  CMD=${REST#*$'\t'}
   SKILL=${SKILL#/}
 fi
 
@@ -261,24 +316,37 @@ case "$TOOL" in
   mcp__*) exit 0 ;;
 esac
 
-tool_effect "$NORMALIZED"
-case "$EFFECT" in
-  observe-only|plan-only) exit 0 ;;
-  skill)
-    [ -n "$SKILL" ] || exit 0
-    WHY="skill \"$SKILL\" runs in a forked subagent context"
-    ;;
-  shape)
-    MATCHED=""
-    for stem in $DELEGATION_STEMS; do
-      case "$NORMALIZED" in
-        *"$stem"*) MATCHED=$stem; break ;;
-      esac
-    done
-    [ -n "$MATCHED" ] || exit 0
-    WHY="delegation-shaped on \"$MATCHED\""
-    ;;
+# Shell tools are classified by command text, not by name shape. Bash /
+# PowerShell (Claude) and Shell (Cursor) are the names the existing primary
+# shell seatbelts already cover.
+case "$NORMALIZED" in
+  bash|powershell|shell) SHELL_EFFECT=1 ;;
 esac
+
+if [ "$SHELL_EFFECT" -eq 1 ]; then
+  [ -n "$CMD" ] || exit 0
+  EFFECT=shell
+  WHY=""
+else
+  tool_effect "$NORMALIZED"
+  case "$EFFECT" in
+    observe-only|plan-only) exit 0 ;;
+    skill)
+      [ -n "$SKILL" ] || exit 0
+      WHY="skill \"$SKILL\" runs in a forked subagent context"
+      ;;
+    shape)
+      MATCHED=""
+      for stem in $DELEGATION_STEMS; do
+        case "$NORMALIZED" in
+          *"$stem"*) MATCHED=$stem; break ;;
+        esac
+      done
+      [ -n "$MATCHED" ] || exit 0
+      WHY="delegation-shaped on \"$MATCHED\""
+      ;;
+  esac
+fi
 
 # The single deliberate escape hatch. It is an environment variable rather than
 # a flag or a state file so it must be set when the session is launched, which
@@ -286,14 +354,36 @@ esac
 # in-session tool call can set it for the call that follows.
 [ "${FM_ALLOW_SUBAGENT:-}" != "1" ] || exit 0
 
-SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || exit 0
 FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd -P)} || exit 0
 FM_HOME=${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}
 STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
 
 # Deciding the skill first spares an inline Skill call the scope check's git
 # processes; only a call that would be denied needs its scope confirmed.
-[ "$EFFECT" != skill ] || skill_forks "$SKILL" || exit 0
+if [ "$EFFECT" = skill ]; then
+  skill_forks "$SKILL" || exit 0
+fi
+
+# Shell classification needs Node and the policy owner beside this script.
+# FM_ROOT_OVERRIDE only selects the scope home; the classifier always comes
+# from the code root that shipped this hook. Missing either fails open,
+# matching the arm and cd shell seatbelts.
+if [ "$EFFECT" = shell ]; then
+  POLICY="$SCRIPT_DIR/fm-subagent-command-policy.mjs"
+  command -v node >/dev/null 2>&1 || exit 0
+  [ -f "$POLICY" ] || exit 0
+  POLICY_OUTPUT=$(node "$POLICY" --command "$CMD" 2>/dev/null) || exit 0
+  [ -n "$POLICY_OUTPUT" ] || exit 0
+  TAB=$(printf '\t')
+  DECISION=${POLICY_OUTPUT%%"$TAB"*}
+  [ "$DECISION" = "deny" ] || exit 0
+  REST=${POLICY_OUTPUT#*"$TAB"}
+  [ "$REST" != "$POLICY_OUTPUT" ] || exit 0
+  CODE=${REST%%"$TAB"*}
+  DETAIL=${REST#*"$TAB"}
+  [ -n "$CODE" ] && [ -n "$DETAIL" ] && [ "$DETAIL" != "$REST" ] || exit 0
+  WHY="agent-cli launch ($CODE)"
+fi
 
 # Scope to a genuine primary home, exactly as the session-start nudge and the
 # turn-end guard do. fm_primary_scope_matches accepts a plain checkout or a
@@ -313,6 +403,10 @@ json_escape() {
 }
 
 ESCAPED=$(json_escape "$REASON")
+if [ "$CURSOR_MODE" -eq 1 ]; then
+  printf '{"permission":"deny","user_message":"%s"}\n' "$ESCAPED"
+  exit 0
+fi
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"%s"}\n' "$ESCAPED" >&2
 [ "$CLAUDE_MODE" -eq 1 ] || printf '{"decision":"deny","reason":"%s"}\n' "$ESCAPED"
 exit 2

@@ -2,7 +2,7 @@
 
 This document is the authoritative human-readable contract for the guard that stops a firstmate primary from delegating work outside the fleet.
 
-The shipped mechanism is `bin/fm-subagent-pretool-check.sh`, a PreToolUse guard that denies a delegation-SHAPED tool name in a genuine primary home.
+The shipped mechanism is `bin/fm-subagent-pretool-check.sh`, a PreToolUse guard that denies a delegation-SHAPED tool name, and a shell tool command that launches a harness agent CLI directly, in a genuine primary home.
 Claude primaries should also use an untracked per-home local `permissions.deny` list as hardening for known Claude delegation tools, because it removes them from the model's schema entirely.
 That deny list must not ship in tracked `.claude/settings.json` because it is Claude-only rather than harness-agnostic, and because tracked project settings propagate into linked worktrees where they disarm legitimate crewmates.
 
@@ -37,10 +37,11 @@ It says nothing about whether the resulting brief, project, or delivery mode is 
 ## Shipped mechanism
 
 `bin/fm-subagent-pretool-check.sh` is the shipped layer.
-It classifies a tool it knows by what that tool does, and any other tool by the shape of its name rather than against a fixed list.
-The tracked Claude PreToolUse matcher is a negative lookahead over an exact-name list of everyday tools the script always allows, plus `mcp__` names, which it never classifies; every other Claude tool name reaches the script, and the script is the single owner of classification.
+It classifies a tool it knows by what that tool does, a shell tool by whether its command text launches a harness agent CLI, and any other tool by the shape of its name rather than against a fixed list.
+The tracked Claude PreToolUse matcher is a negative lookahead over an exact-name list of everyday non-shell tools the script always allows, plus `mcp__` names, which it never classifies; every other Claude tool name reaches the script, and the script is the single owner of classification.
+`Bash` and `PowerShell` reach the script so their command text can be checked; they are not on the always-allow exclusion list.
 The exclusion exists because each hook run costs a process start on every tool call, and `tests/fm-subagent-pretool-check.test.sh` proves the classifier allows every excluded name even when its input names a skill that forks.
-A name may join that list only when the script allows it whatever its input says, which is why `Skill` is not on it.
+A name may join that list only when the script allows it whatever its input says, which is why `Skill`, `Bash`, and `PowerShell` are not on it.
 A stem-enumerating matcher would reintroduce the fail-open-by-enumeration problem this guard exists to solve, because any future tool name outside the matcher would be silently missed before the script could inspect it.
 
 ### Known tools, classified by effect
@@ -52,8 +53,9 @@ The script's `tool_effect` table maps an exact normalized name to what the tool 
 | `observe-only` | `taskoutput`, `taskstop`, `taskget`, `tasklist`, `cronlist`, `bashoutput`, `killshell` | allow |
 | `plan-only` | `taskcreate`, `taskupdate` | allow |
 | `skill` | `skill` | deny when the named skill forks a subagent, otherwise allow |
+| `shell` | `bash`, `powershell`, `shell` | deny when the command launches a harness agent CLI; allow queries and `bin/fm-*` |
 
-Every row matches the whole normalized name, never a substring, so no row can widen by accident: `TaskCreateAgent` and `RemoteTaskCreate` stay denied by shape.
+Every non-shell row matches the whole normalized name, never a substring, so no row can widen by accident: `TaskCreateAgent` and `RemoteTaskCreate` stay denied by shape.
 
 - `observe-only` tools observe or stop work that already exists rather than creating it, and denying them at this layer could strand already-running work with no way to inspect or end it.
   A Claude primary's optional local deny list may still remove them from the schema.
@@ -63,6 +65,7 @@ Every row matches the whole normalized name, never a substring, so no row can wi
   So it is not the "work, agent, schedule, or isolated workspace that firstmate would not know about" the guard exists to stop, and the stem match on `task` is a false positive rather than a policy.
   The cost of the false positive was concrete: the primary could not track its own plan, and the deny text told it to run `bin/fm-brief.sh` and `bin/fm-spawn.sh` to create a todo entry.
 - `skill` is described in "Skills" below.
+- `shell` is described in "Shell agent-CLI launches" below.
 
 Folding `observe-only` and `plan-only` together would be the drift risk, because the observe-or-stop rationale is not true of a tool that writes.
 
@@ -77,6 +80,18 @@ delegate  spawn  dispatch  handoff  remote  sendmessage  monitor
 
 The shipped guard fires on every delegation-shaped name that reaches it, including future names that no deny list knows about yet.
 That future-name behavior is the reason the tracked matcher may exclude only exact names the script always allows, never match by stem.
+
+### Shell agent-CLI launches
+
+A primary that runs a harness CLI through its shell tool - for example `codex exec ...`, `claude -p ...`, `opencode run`, `gemini -p`, or a bare `grok` / `pi` / `omp` launch - creates the same untracked work the name-shape guard exists to stop.
+`bin/fm-subagent-command-policy.mjs` classifies that command text using the shared shell tokenizer and command-position analysis from `bin/fm-arm-command-policy.mjs`.
+It denies a command-position harness CLI that starts a model agent run, whether foreground or backgrounded, and allows non-launching queries of those same CLIs (`--version`, `--help`, auth/status/model listing) plus every `bin/fm-*` script, which is how firstmate legitimately launches workers.
+
+The harness CLI set follows what `bin/fm-harness.sh` knows: `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, `cursor-agent`, `gemini`, `muse` / `muse-bin-*`, `rovo`, `omp`, `agy`, and `devin`.
+OpenCode, Pi, Codex, Grok, and Cursor wire the same checker on their existing shell PreToolUse path (`bash` / `Bash` / `Shell`) so the seatbelt is not Claude-only.
+
+A command-text check is a seatbelt: indirection such as a script file or a variable-built command can still evade it.
+That limit is accepted; closing every indirection would require a different enforcement layer than a PreToolUse command inspector.
 
 ### Skills
 
@@ -274,12 +289,13 @@ Applicability turns on one question: does the harness expose built-in delegation
 
 | Harness | Delegation surface | Status |
 | --- | --- | --- |
-| Claude | 16 known tools, listed above | Scoped guard wired and live-verified; untracked local deny list verified and recommended. |
-| Codex | none | Not applicable, verified empirically below. Codex 0.144.1 exposes no subagent, sub-task, or delegated-agent tool, so there is nothing to remove or intercept. `.codex/hooks.json` is unchanged. |
-| Grok | present, exact tokens unconfirmed | Not wired pending live verification. See below. |
+| Claude | 16 known tools, listed above; shell Bash/PowerShell | Name-shape guard wired and live-verified; shell agent-CLI seatbelt wired; untracked local deny list verified and recommended. |
+| Codex | none by name; shell Bash | Name-shape not applicable (verified empirically below). Shell agent-CLI seatbelt wired on the existing Bash PreToolUse entry. |
+| Grok | present, exact tokens unconfirmed; shell Bash | Shell agent-CLI seatbelt wired. Name-shape matcher pending live tool-token verification. See below. |
 | omp | present, per bundled material | Not wired and unverified. omp ships a built-in task delegation tool: its bundled docs list `tools/task.md` and the captain-level `task.maxConcurrency` setting governs it. No Firstmate delegation seatbelt is wired for it yet, and its status stays unverified until a live tool enumeration is recorded the way the Codex row was. |
-| OpenCode | present, exact tokens unconfirmed | Not wired pending live verification. See below. |
-| Pi | none reported | Not wired pending live verification. See below. |
+| OpenCode | present, exact tokens unconfirmed; shell bash | Shell agent-CLI seatbelt wired on the existing bash plugin path. Name-shape matcher pending live verification. See below. |
+| Pi | none reported by name; shell bash | Shell agent-CLI seatbelt wired on the existing tool_call path. Name-shape pending live verification where a delegation tool exists. See below. |
+| Cursor | unverified by name; shell Shell | Shell agent-CLI seatbelt wired on the existing Shell preToolUse path. Name-shape matcher pending live tool-token verification. |
 
 ### Codex, verified not applicable
 
@@ -314,27 +330,21 @@ SUBAGENT_TOOL=no
 ```
 
 `multi_tool_use.parallel` batches calls to the tools above; it does not spawn an agent.
-Codex is therefore not applicable today, and this table row is the tripwire: if a future Codex release adds a delegated-agent tool, wire `.codex/hooks.json` the same way its `Bash` PreToolUse entries already forward stdin to a checker.
+Codex has no built-in delegation tool to intercept by name, and this table row is the tripwire for that surface: if a future Codex release adds a delegated-agent tool, wire a name-shape matcher the same way Claude does.
+Its `Bash` PreToolUse entry already forwards stdin to this checker for the shell agent-CLI seatbelt.
 
-### Grok, OpenCode, and Pi, inspected but not wired
+### Grok, OpenCode, and Pi: shell seatbelt wired, name-shape pending
 
-The integration surface of each was inspected and each is structurally wireable for the shipped guard.
+The shell agent-CLI seatbelt is wired on each harness's existing bash/Bash path.
 
-- Grok's tracked hooks (`.grok/hooks/fm-primary-pretool-check.json`, `.grok/hooks/fm-primary-cd-check.json`) use a `PreToolUse` matcher, currently `Bash`, and pipe stdin to a checker.
-  The checker already reads Grok's `.toolName` field, so only the matcher token is missing.
-  Grok does expose a delegation surface: `docs/supervision-protocols/grok.md` documents `get_command_or_subagent_output(<task_id>)`, which implies a corresponding dispatch tool.
-- OpenCode's tracked plugins gate on `input?.tool !== "bash"` inside `tool.execute.before`, and block by throwing.
-  Swapping that comparison for a call into this checker with `--tool` is the whole change.
-- Pi's tracked extension gates on `event.toolName !== "bash"` inside `pi.on("tool_call", ...)` and blocks by returning `{block: true}`.
-  The same change applies. A parallel evaluation reports that Pi exposes no delegation tool at all, which would make it not applicable, but that was not verified here.
+- Grok's tracked Bash hook (`.grok/hooks/fm-primary-pretool-check.json`) pipes stdin to this checker for shell launches.
+  A name-shape matcher for Grok's own delegation tools is still unwired: the exact tool-name tokens are unconfirmed, and `docs/supervision-protocols/grok.md` documents `get_command_or_subagent_output(<task_id>)`, which implies a corresponding dispatch tool.
+- OpenCode's tracked bash plugin and Pi's tracked `tool_call` handler call this checker with `--command` for shell launches, alongside the arm and cd checks.
+  A name-shape matcher for OpenCode's or Pi's own delegation tools remains pending live tool-name verification where those tools exist.
 
-None of the three is wired in this change because none of the three binaries is installed on the host where this work was done, so the exact tool-name tokens could not be confirmed and the wiring could not be validated against the real harness.
-This repo's rule in the `firstmate-coding-guidelines` skill is that a harness hook must be validated in a scratch project before it is trusted, and `arm-pretool-check.md` records the concrete cost of guessing: a Grok hook whose `command` string is even slightly wrong fails to launch the hook at all.
-Wiring an unvalidated matcher would trade a known gap for an unknown breakage.
-
-The bounded follow-up for each is identical to the Codex procedure above.
+The remaining follow-up is the name-shape matcher only.
 On a host with the binary installed, ask the harness to enumerate its tools, then wire the matcher and re-run the live matrix below.
-`bin/fm-subagent-pretool-check.sh` needs no change for any of them: it already accepts Grok's stdin shape and the `--tool` CLI form OpenCode and Pi use, and it already emits the Grok stdout decision object by default.
+`bin/fm-subagent-pretool-check.sh` already accepts Grok's stdin shape and the `--tool` / `--command` CLI forms.
 
 ## Live validation record, 2026-07-22
 
@@ -478,6 +488,8 @@ Run:
 
 ```sh
 bash -n bin/fm-subagent-pretool-check.sh
+node --check bin/fm-subagent-command-policy.mjs
+node --check bin/fm-arm-command-policy.mjs
 bin/fm-lint.sh
 tests/fm-subagent-pretool-check.test.sh
 ```
@@ -497,6 +509,5 @@ Every firstmate guard's in-flight-work branch keys off `state/<id>.meta`, and on
 Without an independent Relay need, unaccounted primary work therefore reads as idle rather than suspicious.
 
 The durable fix for that class is to make the guards treat "the primary is doing project-shaped work with zero `state/*.meta` files" as a suspicious state rather than an idle one.
-That would catch this class on any harness, including work created through `Bash`.
-This change fences only the Claude tool surface.
-That is a separate change to `bin/fm-supervision-lib.sh` and `bin/fm-turnend-guard.sh` and is out of scope here.
+The shell agent-CLI seatbelt above closes the direct `Bash` / `Shell` harness-CLI launch path; indirection and non-CLI project work can still evade a command-text check.
+Treating unaccounted primary project work as suspicious remains a separate change to `bin/fm-supervision-lib.sh` and `bin/fm-turnend-guard.sh` and is out of scope here.

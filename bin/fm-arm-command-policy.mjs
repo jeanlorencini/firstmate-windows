@@ -7,11 +7,12 @@
 //
 // This file is the sole owner of firstmate's shell command classification.
 // The tokenizer and command-position analysis (Lexer, splitProgram,
-// commandPosition) are exported so the sibling cd-guard policy
-// (bin/fm-cd-command-policy.mjs) reuses the same proven parser instead of
-// duplicating shell lexing; see docs/cd-guard.md. The watcher-arm decision
-// procedure below stays private to this file. The CLI entry point at the bottom
-// runs only when this module is invoked directly, never on import.
+// commandPosition) are exported so sibling policies
+// (bin/fm-cd-command-policy.mjs, bin/fm-subagent-command-policy.mjs) reuse the
+// same proven parser instead of duplicating shell lexing; see docs/cd-guard.md
+// and docs/subagent-guard.md. The watcher-arm decision procedure below stays
+// private to this file. The CLI entry point at the bottom runs only when this
+// module is invoked directly, never on import.
 
 import { posix as path } from "node:path";
 import { realpathSync } from "node:fs";
@@ -961,7 +962,8 @@ function deny(code) {
 }
 
 // Run the CLI only when invoked directly (node fm-arm-command-policy.mjs ...),
-// never when imported by a sibling policy such as bin/fm-cd-command-policy.mjs.
+// never when imported by a sibling policy such as bin/fm-cd-command-policy.mjs
+// or bin/fm-subagent-command-policy.mjs.
 function invokedDirectly() {
   const entry = process.argv[1];
   if (!entry) return false;

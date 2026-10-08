@@ -54,10 +54,16 @@ export const FmPrimaryPretoolCheck = async ({ directory, worktree }) => {
       const command = output?.args?.command;
       if (!command || typeof command !== "string") return;
 
-      const result = await runProcess(`${root}/bin/fm-arm-pretool-check.sh`, ["--command", command]);
-      if (result.code !== 2) return;
+      const armResult = await runProcess(`${root}/bin/fm-arm-pretool-check.sh`, ["--command", command]);
+      if (armResult.code === 2) {
+        const reason = armResult.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt";
+        throw new Error(reason);
+      }
 
-      const reason = result.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt";
+      const subagentResult = await runProcess(`${root}/bin/fm-subagent-pretool-check.sh`, ["--command", command]);
+      if (subagentResult.code !== 2) return;
+
+      const reason = subagentResult.stderr.trim() || "denied by the subagent-dispatch PreToolUse seatbelt";
       throw new Error(reason);
     },
   };
