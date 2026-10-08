@@ -237,7 +237,12 @@
 #   out as a transient rather than adopted and then refused, so a home that is
 #   itself a linked worktree of the project repository still launches. A pane
 #   that never reaches an isolated worktree refuses at the end of that wait,
-#   naming the last path seen and why it was rejected.
+#   naming the last path seen and why it was rejected. The wait budget defaults
+#   to 60s, or 180s on Windows (MSYS/MINGW/CYGWIN), where a new pool slot under
+#   load has been observed to keep the pane on the project past 60s; FM_SPAWN_TREEHOUSE_WAIT_SECS
+#   overrides either default. A Herdr projected pane that hits that refusal is
+#   closed through the ordinary endpoint kill before abort cleanup, so a
+#   focus-unsafe projection close refusal cannot leave the unused pane behind.
 #   That placement is proven only at launch. Every ship or scout pane therefore
 #   also receives `export FM_TASK_ID=<task-id>` before the launch command, on
 #   the same channel as GOTMPDIR, and bin/fm-test-run.sh refuses to execute the
@@ -4334,7 +4339,22 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   candidate=""
   last_seen=""
   last_reason="the pane reported no path"
-  for _ in $(seq 1 60); do
+  # Portable default 60s; Windows needs longer for new-slot treehouse get under
+  # load (measured: tiny/throwaway repos ~3-5s unloaded; live incidents kept the
+  # pane on the project past 60s). FM_SPAWN_TREEHOUSE_WAIT_SECS overrides.
+  if [ -n "${FM_SPAWN_TREEHOUSE_WAIT_SECS:-}" ]; then
+    SPAWN_TREEHOUSE_WAIT_SECS=$FM_SPAWN_TREEHOUSE_WAIT_SECS
+  else
+    case $(uname -s 2>/dev/null) in
+      MINGW*|MSYS*|CYGWIN*) SPAWN_TREEHOUSE_WAIT_SECS=180 ;;
+      *) SPAWN_TREEHOUSE_WAIT_SECS=60 ;;
+    esac
+  fi
+  case $SPAWN_TREEHOUSE_WAIT_SECS in
+    ''|*[!0-9]*) SPAWN_TREEHOUSE_WAIT_SECS=60 ;;
+  esac
+  [ "$SPAWN_TREEHOUSE_WAIT_SECS" -ge 1 ] 2>/dev/null || SPAWN_TREEHOUSE_WAIT_SECS=60
+  for _ in $(seq 1 "$SPAWN_TREEHOUSE_WAIT_SECS"); do
     p=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$p" ] || last_seen="$p"
     if [ -n "$p" ] && spawn_worktree_isolated "$p"; then
@@ -4352,7 +4372,15 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     sleep 1
   done
   if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter an isolated worktree within 60s (last seen '${last_seen:-none}': $last_reason; spawning project '$PROJ_ABS'); inspect window $T" >&2
+    echo "error: treehouse get did not enter an isolated worktree within ${SPAWN_TREEHOUSE_WAIT_SECS}s (last seen '${last_seen:-none}': $last_reason; spawning project '$PROJ_ABS'); inspect window $T" >&2
+    # Projection abort cleanup refuses a focus-unsafe close when pane get cannot
+    # verify the exact pane, which left orphan Herdr panes after this timeout.
+    # The ordinary endpoint kill falls back to an explicit close, so use it here
+    # and disarm the projection abort path that would only warn and keep the pane.
+    if [ "$BACKEND" = herdr ] && [ "${HERDR_PROJECTION_ABORT_CLEANUP:-0}" = 1 ]; then
+      HERDR_PROJECTION_ABORT_CLEANUP=0
+      rovo_endpoint_cleanup
+    fi
     exit 1
   fi
 
