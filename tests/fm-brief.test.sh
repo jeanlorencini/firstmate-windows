@@ -216,6 +216,8 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep 'never a bare number such as "PR 108"' "$brief" "$id: brief missing the full-PR-URL rule"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
+    assert_grep 'Before appending `done`, stop every long-running process you started for the task' "$brief" \
+      "$id: brief missing the stop-owned-processes-before-done rule"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
@@ -1010,6 +1012,8 @@ test_scout_and_secondmate_scaffold() {
   assert_grep "## Captain's intent" "$brief" "scout brief missing Captain's intent subsection"
   assert_grep "## Firstmate spec" "$brief" "scout brief missing Firstmate spec subsection"
   assert_grep "{FIRSTMATE_SPEC}" "$brief" "scout brief missing the spec placeholder"
+  assert_grep 'Before appending `done`, stop every long-running process you started for the task' "$brief" \
+    "scout brief missing the stop-owned-processes-before-done rule"
 
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-sm-q6 --secondmate alpha >/dev/null 2>&1 \

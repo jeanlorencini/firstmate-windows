@@ -338,6 +338,15 @@ There is no pull request, no \`gh-axi\` call, and no forge CI result to report: 
 EOF
 }
 
+# One short rule shared by every ship Definition of done and the scout scaffold.
+# Workers stop task-owned long-running processes themselves before `done`;
+# teardown's worktree-rooted reap is the backstop, not the primary cleanup.
+fm_dod_stop_owned_processes_rule() {
+  cat <<'EOF'
+Before appending `done`, stop every long-running process you started for the task (dev or view servers, watchers, background jobs, headless or debug browsers and their bridges), and do not leave any running.
+EOF
+}
+
 fm_dod_block() {  # <mode> <task-id> [branch] [<forge>]
   local mode=$1 id=$2 forge=${4:-none}
   local branch=${3:-fm/$id}
@@ -444,6 +453,7 @@ EOF
       echo "error: fm_dod_block: unknown delivery mode '$mode'" >&2
       return 1 ;;
   esac
+  fm_dod_stop_owned_processes_rule
 }
 
 # 0 when <sha> is contained in a ref under <namespace> in <repo>.

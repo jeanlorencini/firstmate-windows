@@ -629,14 +629,29 @@ backlog_row_state() {
 
 # Build the teardown test's executable search path without lsof, regardless of
 # whether the host installs it in /usr/bin, /usr/sbin, or a package-manager bin.
+# On MSYS/Git Bash the loader resolves shared libraries via PATH, so a
+# bin-only symlink farm cannot exec bash unless the install's DLLs are also
+# linked into that farm; without them teardown exits 127 before any scan runs.
 make_path_without_lsof() {  # <case-dir>
-  local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved
+  local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved bash_dir dll
   mkdir -p "$path_dir"
-  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
+  for cmd in awk bash basename cat chmod cp cut cygpath date dirname env find git grep head hostname id ln \
     mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
     resolved=$(command -v "$cmd" 2>/dev/null) || continue
     case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
   done
+  resolved=$(command -v bash 2>/dev/null) || resolved=
+  case "$resolved" in
+    /*)
+      bash_dir=$(cd "$(dirname "$resolved")" && pwd -P) || bash_dir=
+      if [ -n "$bash_dir" ]; then
+        for dll in "$bash_dir"/*.dll; do
+          [ -e "$dll" ] || continue
+          ln -sf "$dll" "$path_dir/${dll##*/}" 2>/dev/null || true
+        done
+      fi
+      ;;
+  esac
   printf '%s\n' "$path_dir"
 }
 
@@ -3713,6 +3728,8 @@ test_leaked_worktree_process_is_reaped() {
   fi
   assert_grep "reaping leaked worktree process" "$case_dir/stderr" \
     "leaked-process-reap: teardown did not report reaping the leaked process"
+  assert_grep "pid=$pid cmd=sleep" "$case_dir/stderr" \
+    "leaked-process-reap: teardown did not report the leaked process by pid and command line"
   pass "a leaked descendant process rooted under the task's worktree is reaped by teardown, not left surviving"
 }
 
@@ -3751,6 +3768,17 @@ test_lsof_absent_reaps_tmux_process_group() {
   path_without_lsof=$(make_path_without_lsof "$case_dir")
   PATH="$path_without_lsof" command -v lsof >/dev/null 2>&1 \
     && fail "lsof-absent-process-group-reap: fixture path unexpectedly exposes lsof"
+  # The process-group fallback needs `ps -o pgid=` / identity via `ps -o
+  # lstart=` when /proc is forced unavailable. Git Bash / MSYS ps rejects -o,
+  # so skip there; the /proc cwd fallback case covers that host shape.
+  if ! ps -o pgid= -p "$$" >/dev/null 2>&1; then
+    pass "lsof-absent-process-group-reap: skipped - host ps lacks -o pgid= for the process-group fallback"
+    return 0
+  fi
+  # Point FM_PROC_ROOT_OVERRIDE at a missing path so this case still exercises
+  # the tmux process-group fallback on hosts where /proc/*/cwd is readable
+  # without lsof. An empty directory would look like a usable scanner and
+  # silently miss the sleeper.
 
   perl -e 'setpgrp(0, 0); chdir shift or die; exec "sleep", "300"' "$case_dir/wt" &
   pid=$!
@@ -3768,6 +3796,7 @@ EOF
 
   rc=0
   FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+  FM_PROC_ROOT_OVERRIDE="$case_dir/no-proc" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 0 "$rc" "lsof-absent-process-group-reap: teardown should succeed"
@@ -3778,6 +3807,47 @@ EOF
   assert_grep "reaping leaked worktree process group" "$case_dir/stderr" \
     "lsof-absent-process-group-reap: teardown did not use the process-group fallback"
   pass "missing lsof falls back to reaping the tmux pane process group"
+}
+
+test_lsof_absent_proc_cwd_fallback_reaps_and_reports() {
+  local case_dir rc pid path_without_lsof
+  case_dir=$(make_case leaked-proc-cwd-fallback)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  path_without_lsof=$(make_path_without_lsof "$case_dir")
+  PATH="$path_without_lsof" command -v lsof >/dev/null 2>&1 \
+    && fail "leaked-proc-cwd-fallback: fixture path unexpectedly exposes lsof"
+  [ -d /proc ] || {
+    pass "leaked-proc-cwd-fallback: skipped - host has no /proc for the cwd fallback"
+    return 0
+  }
+  [ -e /proc/$$/cwd ] || {
+    pass "leaked-proc-cwd-fallback: skipped - host /proc lacks cwd entries"
+    return 0
+  }
+
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  pid=$!
+  disown
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "leaked-proc-cwd-fallback: setup sleeper did not start"
+
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "leaked-proc-cwd-fallback: teardown should succeed"
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "leaked-proc-cwd-fallback: leaked worktree process survived the /proc cwd fallback"
+  fi
+  assert_grep "reaping leaked worktree process" "$case_dir/stderr" \
+    "leaked-proc-cwd-fallback: teardown did not report reaping via the /proc cwd fallback"
+  assert_grep "pid=$pid cmd=sleep" "$case_dir/stderr" \
+    "leaked-proc-cwd-fallback: teardown did not report pid and command line"
+  assert_no_grep "process group" "$case_dir/stderr" \
+    "leaked-proc-cwd-fallback: usable /proc should not fall through to the process-group path"
+  pass "missing lsof with usable /proc reaps a worktree-rooted process and reports pid plus command line"
 }
 
 test_lsof_error_refuses_before_removal() {
@@ -3859,6 +3929,12 @@ test_exec_changed_process_is_still_reaped() {
   case_dir=$(make_case exec-changed-process)
   write_meta "$case_dir" no-mistakes ship
   land_shippable_commit "$case_dir"
+  # This case wraps the host lsof so the process stays visible across an exec
+  # that changes its command line. Without a real lsof, the wrapper cannot scan.
+  if [ -z "${REAL_LSOF_FOR_TEST:-}" ]; then
+    pass "exec-changed-process: skipped - host has no lsof for the wrap-around scanner"
+    return 0
+  fi
   marker="$case_dir/exec-now"
   done_flag="$case_dir/exec-done"
 
@@ -4345,6 +4421,7 @@ test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_tmux_process_group
+test_lsof_absent_proc_cwd_fallback_reaps_and_reports
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped

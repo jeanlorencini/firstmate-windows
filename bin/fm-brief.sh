@@ -282,9 +282,13 @@ elif [ "$FORGE_SET" -eq 1 ] || [ "$SHAPE_SET" -eq 1 ]; then
 fi
 ID=${POS[0]}
 BRANCH="$BRANCH_PREFIX$ID"
-if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
-  echo "error: --branch-prefix and task id must form a valid git branch (got '$BRANCH')" >&2
-  exit 1
+# Ship briefs alone create a branch; scout/secondmate still compute BRANCH for
+# shared helpers, but must not require `git` on PATH (tests isolate axi tools).
+if [ "$KIND" = ship ]; then
+  if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
+    echo "error: --branch-prefix and task id must form a valid git branch (got '$BRANCH')" >&2
+    exit 1
+  fi
 fi
 printf -v BRANCH_Q '%q' "$BRANCH"
 
@@ -541,6 +545,7 @@ if "$SCRIPT_DIR/fm-bootstrap.sh" lavish-compatible >/dev/null 2>&1; then
 else
   LAVISH_LINE='Lavish is unavailable (lavish-axi is missing or below its supported version floor), so deliver your findings as a text report without Lavish, even for a visual deliverable.'
 fi
+STOP_OWNED_PROCS_RULE=$(fm_dod_stop_owned_processes_rule)
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -583,6 +588,7 @@ Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
 $LAVISH_LINE
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
+$STOP_OWNED_PROCS_RULE
 When the report is complete, append \`done [at=<epoch>]: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF

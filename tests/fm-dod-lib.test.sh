@@ -382,6 +382,19 @@ test_pr_based_dod_draft_check_uses_gh_axi() {
   pass "PR-based DoD draft check uses gh-axi"
 }
 
+# Workers must stop task-owned long-running processes before appending done
+# (observed 2026-10-08: view servers and browsers left running after done).
+test_dod_requires_stopping_owned_processes_before_done() {
+  local mode out
+  for mode in no-mistakes direct-PR local-only; do
+    out="$TMP_ROOT/dod-stop-$mode.md"
+    fm_dod_block "$mode" dod-stop-procs > "$out"
+    assert_grep 'Before appending `done`, stop every long-running process you started for the task' "$out" \
+      "$mode: DoD missing the stop-owned-processes-before-done rule"
+  done
+  pass "every ship DoD requires stopping owned long-running processes before done"
+}
+
 test_scout_done_is_not_gated
 test_unpushed_ship_done_is_refused
 test_no_mistakes_prevalidation_done_is_not_gated
@@ -400,5 +413,6 @@ test_standalone_local_only_needs_project_ref
 test_non_done_lines_are_not_gated
 test_fenced_and_indented_captain_lines_are_not_intent
 test_pr_based_dod_draft_check_uses_gh_axi
+test_dod_requires_stopping_owned_processes_before_done
 
 echo "all fm-dod-lib tests passed"
