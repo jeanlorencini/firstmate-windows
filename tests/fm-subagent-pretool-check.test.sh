@@ -428,11 +428,15 @@ test_shell_allows_queries_and_fm_scripts() {
   expect_command_allow "codex version" 'codex --version'
   expect_command_allow "claude help" 'claude --help'
   expect_command_allow "opencode help" 'opencode -h'
+  expect_command_allow "codex exec help" 'codex exec --help'
+  expect_command_allow "opencode run help" 'opencode run --help'
+  expect_command_allow "codex exec short help" 'codex exec -h'
   expect_command_allow "claude auth status" 'claude auth status'
   expect_command_allow "gemini version" 'gemini --version'
   expect_command_allow "fm-spawn launch" 'bin/fm-spawn.sh --scout research-01'
   expect_command_allow "fm-brief scaffold" 'bin/fm-brief.sh ship demo'
   expect_command_allow "ordinary shell" 'ls projects data 2>&1'
+  expect_command_allow "ordinary git status" 'git status'
   expect_command_allow "escape hatch on launch" 'codex exec do-it' FM_ALLOW_SUBAGENT=1
   pass "the shell seatbelt allows CLI queries, bin/fm-* scripts, ordinary commands, and the escape hatch"
 }

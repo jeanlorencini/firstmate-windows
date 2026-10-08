@@ -101,9 +101,12 @@ function isQueryFlag(arg) {
 
 function isQueryOnly(args) {
   if (args.length === 0) return false;
+  // Help/version short-circuit before a launch even after a launch-shaped
+  // subcommand: `codex exec --help` and `opencode run --help` must stay allowed.
+  if (args.some((arg) => isQueryFlag(arg))) return true;
   const first = args[0];
   if (QUERY_SUBCOMMANDS.has(first.toLowerCase())) return true;
-  return args.every((arg) => isQueryFlag(arg));
+  return false;
 }
 
 function deny(code, detail) {

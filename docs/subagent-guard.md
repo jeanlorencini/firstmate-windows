@@ -85,7 +85,7 @@ That future-name behavior is the reason the tracked matcher may exclude only exa
 
 A primary that runs a harness CLI through its shell tool - for example `codex exec ...`, `claude -p ...`, `opencode run`, `gemini -p`, or a bare `grok` / `pi` / `omp` launch - creates the same untracked work the name-shape guard exists to stop.
 `bin/fm-subagent-command-policy.mjs` classifies that command text using the shared shell tokenizer and command-position analysis from `bin/fm-arm-command-policy.mjs`.
-It denies a command-position harness CLI that starts a model agent run, whether foreground or backgrounded, and allows non-launching queries of those same CLIs (`--version`, `--help`, auth/status/model listing) plus every `bin/fm-*` script, which is how firstmate legitimately launches workers.
+It denies a command-position harness CLI that starts a model agent run, whether foreground or backgrounded, and allows non-launching queries of those same CLIs (`--version`, `--help`, auth/status/model listing), including help/version after a launch-shaped subcommand such as `codex exec --help` or `opencode run --help`, plus every `bin/fm-*` script, which is how firstmate legitimately launches workers.
 
 The harness CLI set follows what `bin/fm-harness.sh` knows: `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, `cursor-agent`, `gemini`, `muse` / `muse-bin-*`, `rovo`, `omp`, `agy`, and `devin`.
 OpenCode, Pi, Codex, Grok, and Cursor wire the same checker on their existing shell PreToolUse path (`bash` / `Bash` / `Shell`) so the seatbelt is not Claude-only.
