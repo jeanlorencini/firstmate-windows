@@ -367,7 +367,8 @@ fm_pr_metadata_identity_parse() {
   FM_PR_META_NUMBER=
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   [ "$(fm_pr_file_link_count "$file")" = 1 ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
+  # Emptied before each read, as _fm_status_event_scan in bin/fm-classify-lib.sh explains.
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       pr=*)
         pr_count=$((pr_count + 1))

@@ -351,7 +351,8 @@ fm_busy_muse_binding_field() {  # <state-dir> <id> <key>
   local path line key=$3
   path=$(fm_busy_muse_binding_path "$1" "$2")
   [ -f "$path" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
+  # Emptied before each read, as _fm_status_event_scan in bin/fm-classify-lib.sh explains.
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       "$key="*)
         line=${line#"$key="}
@@ -428,7 +429,7 @@ fm_busy_muse_binding_has_prior_log() {  # <state-dir> <id> <session-log>
   local path line
   path=$(fm_busy_muse_binding_path "$1" "$2")
   [ -f "$path" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     [ "$line" = "prior_log=$3" ] && return 0
   done < "$path"
   return 1
@@ -438,7 +439,7 @@ fm_busy_muse_cache_field() {  # <state-dir> <id> <key>
   local path line key=$3
   path=$(fm_busy_muse_cache_path "$1" "$2")
   [ -f "$path" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       "$key="*)
         line=${line#"$key="}

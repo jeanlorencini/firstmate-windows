@@ -830,7 +830,8 @@ task_json_lines() {
     endpoint_exists=null
     agent_alive=not_checked
     endpoint_file="$SNAPSHOT_TASK_DIR/$id.endpoint"
-    while IFS= read -r observation_line || [ -n "$observation_line" ]; do
+    # Emptied before each read, as _fm_status_event_scan in bin/fm-classify-lib.sh explains.
+    while observation_line=; IFS= read -r observation_line || [ -n "$observation_line" ]; do
       case "$observation_line" in
         endpoint_exists=*) endpoint_exists=${observation_line#*=} ;;
         agent_alive=*) agent_alive=${observation_line#*=} ;;

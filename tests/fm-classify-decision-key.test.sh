@@ -14,8 +14,10 @@
 # fold's own source text. Also covers status_key_closing_verb, which reports how
 # the status side currently reads one key so a consumer can tell a settled key
 # from one handed to a durable captain-held task (bin/fm-captain-hold.sh
-# diverged). Cross-drain cursor persistence and the incremental
-# cost bound live in tests/fm-wake-drain-open-decisions-cursor.test.sh; the
+# diverged). Also covers the activity stream reader ending when a read fails
+# mid-stream instead of replaying its last line. Cross-drain cursor persistence
+# and the incremental cost bound live in
+# tests/fm-wake-drain-open-decisions-cursor.test.sh; the
 # drain wiring lives in tests/fm-wake-drain-open-decisions.test.sh.
 set -u
 
@@ -558,6 +560,35 @@ test_declared_wait_survives_answers_past_the_event_window() {
   pass "a declared wait outlives answers for other keys beyond the event window, and its own resolved line retracts it"
 }
 
+# A read that fails mid-stream, rather than reaching end of file, ends the fold.
+# Bash keeps the last line in the variable when a read fails, so a loop that
+# only tested the variable replayed that line forever at full CPU. The reader
+# closes its own stdin on USR1, after the first line, so every later read fails.
+test_activity_stream_stops_on_a_read_error() {
+  local dir pid i
+  dir=$(case_dir read-error)
+  (
+    trap 'exec 0<&-' USR1
+    printf '%s\n' "$BASHPID" > "$dir/reader.pid"
+    status_open_activities - > "$dir/out" 2> /dev/null
+    printf 'returned\n' >> "$dir/out"
+  ) < <(printf '%s\n' "$BASHPID" > "$dir/writer.pid"; printf 'working [key=a]: first\n'; exec sleep 30) &
+  for i in $(seq 1 50); do [ -s "$dir/reader.pid" ] && [ -s "$dir/writer.pid" ] && break; sleep 0.1; done
+  pid=$(cat "$dir/reader.pid")
+  sleep 3
+  kill -USR1 "$pid"
+  for i in $(seq 1 100); do kill -0 "$pid" 2> /dev/null || break; sleep 0.1; done
+  if kill -0 "$pid" 2> /dev/null; then
+    kill -9 "$pid" "$(cat "$dir/writer.pid")" 2> /dev/null
+    fail "the activity stream reader kept running after its stdin failed"
+  fi
+  kill "$(cat "$dir/writer.pid")" 2> /dev/null
+  [ "$(cat "$dir/out")" = "$(printf 'a\tworking\tfirst\nreturned')" ] \
+    || fail "the reader did not fold the line it read before the failure: '$(cat "$dir/out")'"
+  pass "a read failure mid-stream ends the activity fold with the lines already read"
+}
+
 test_keyless_wait_survives_stated_default_retraction
 test_declared_wait_survives_answers_past_the_event_window
+test_activity_stream_stops_on_a_read_error
 test_bare_prose_cannot_open_or_close_a_decision

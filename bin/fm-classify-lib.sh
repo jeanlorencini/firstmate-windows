@@ -245,7 +245,12 @@ status_prefix_unrecognized() {  # <status-line>
 _fm_status_event_scan() {
   local line last='' prev='' fallback='' legacy_re
   legacy_re="^[[:space:]]*(${FM_CAPTAIN_RE:-$FM_CLASSIFY_CAPTAIN_RE_DEFAULT})"
-  while IFS= read -r line || [ -n "$line" ]; do
+  # Each read empties its variable first. A read that fails, rather than
+  # reaching end of file, leaves bash's previous value in place, so the
+  # `|| [ -n ]` guard that keeps an unterminated last line would replay the old
+  # line forever. On Windows a pipe read fails with EACCES once another reader
+  # of that pipe is killed. Every `read || [ -n ]` loop in this file does the same.
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     case "$line" in *[![:space:]]*) fallback=$line ;; *) continue ;; esac
     _fm_status_line_is_event "$line" "$legacy_re" && { prev=$last; last=$line; }
   done
@@ -388,7 +393,7 @@ status_declared_wait_line() {  # <status-file>
 _fm_status_declared_wait_scan() {  # <resolve-verb> <legacy-captain-re>
   local resolve=$1 legacy_re=$2 line verb key keys=$'\n' i=0
   local -a lines=()
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     lines[i]=$line
     i=$((i + 1))
   done
@@ -554,7 +559,7 @@ status_event_recorded() {  # <status-file> <new-status-line>
   local wanted line untimed
   [ -f "$1" ] || return 1
   _fm_status_untimed "$2" wanted
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     _fm_status_untimed "$line" untimed
     [ "$untimed" != "$wanted" ] || return 0
   done < "$1"
@@ -818,7 +823,7 @@ _fm_status_kind() {
   local meta=${1%.status}.meta kind=${2:-} line
   if [ -z "$kind" ]; then
     [ -f "$meta" ] && [ -r "$meta" ] && [ ! -L "$meta" ] || { printf unknown; return 0; }
-    while IFS= read -r line || [ -n "$line" ]; do
+    while line=; IFS= read -r line || [ -n "$line" ]; do
       case "$line" in kind=*) kind=${line#kind=} ;; esac
     done < "$meta"
     kind=${kind:-ship}
@@ -893,7 +898,7 @@ status_open_decisions() {  # <status-file> [<kind>]
   kind=$(_fm_status_kind "$f" "$kind")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     status_line_verb "$line" verb
     case "$verb" in
       needs-decision|blocked|done|failed|"$resolve"|"$held")
@@ -1008,7 +1013,7 @@ status_key_closing_verb() {  # <status-file> <key>
   candidates=$(grep -E \
     "^[[:space:]]*(needs-decision|blocked|done|failed|$resolve|$held)[[:space:]:[]" \
     "$f") || [ "$?" -eq 1 ] || candidates=$(cat "$f")
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     status_line_verb "$line" event
     case "$event:$kind" in
       done:ship|done:scout|failed:ship|failed:scout) ;;
@@ -1313,7 +1318,7 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
       && printf '%s\t%s\n' "$f" "$chunk_size" >> "$FM_OPEN_DECISIONS_READ_PROBE"
     resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
     held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-    while IFS= read -r line || [ -n "$line" ]; do
+    while line=; IFS= read -r line || [ -n "$line" ]; do
       open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind")
     done < "$chunk_file"
     rm -f "$chunk_file"
@@ -1747,7 +1752,7 @@ $fully_presented
       # lines remain unacknowledged only while they are the sole unread content,
       # preserving delayed signal annotations without replaying a handled note
       # that happened to follow a routine line.
-      while IFS= read -r line || [ -n "$line" ]; do
+      while line=; IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
           *[![:space:]]*)
             if status_line_is_unread_surface "$line"; then safe=true; break; fi
@@ -1929,7 +1934,7 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
   [ "$offset" -lt "$size" ] || return 0
   _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk_file" 2>/dev/null \
     || { rm -f "$chunk_file"; return 1; }
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       *[![:space:]]*) printf '%s\n' "$line" || { rc=1; break; } ;;
     esac
@@ -2043,7 +2048,7 @@ _fm_status_open_activities_stream() {
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     # Blank-line guard; see _fm_decision_fold_line for why this is a glob.
     case "$line" in
       *[![:space:]]*) ;;
@@ -2089,7 +2094,7 @@ window_to_task() {
       mw=
       mt=
       {
-        while IFS= read -r line || [ -n "$line" ]; do
+        while line=; IFS= read -r line || [ -n "$line" ]; do
           case "$line" in
             window=*) mw=${line#window=} ;;
             terminal=*) mt=${line#terminal=} ;;
@@ -2167,7 +2172,7 @@ status_home_appends_ranges() {  # <status-file> -> start<TAB>end lines
     *$'\n'*) rest=${rest#*$'\n'} ;;
     *) return 0 ;;
   esac
-  while IFS=$(printf '\t') read -r start end extra || [ -n "$start" ]; do
+  while start=; IFS=$(printf '\t') read -r start end extra || [ -n "$start" ]; do
     [ -n "$start" ] || continue
     [ -z "$extra" ] || continue
     case "$start:$end" in *[!0-9:]*) continue ;; esac
@@ -2278,7 +2283,7 @@ _fm_status_open_decision_origins() {  # <status-file> [<kind>]
   kind=$(_fm_status_kind "$f" "${2:-}")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     number=$((number + 1))
     after=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind")
     [ -n "$after" ] || origins=''
@@ -2337,7 +2342,7 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
   }
   [ "$cur_ident" = "$ident" ] || { rm -f "$chunk_file"; return 2; }
   # shellcheck disable=SC2094 # The loop and the origin fold below only read the span scratch.
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     line_number=$((line_number + 1))
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
     if status_is_captain_held "$line"; then
@@ -2418,6 +2423,19 @@ status_span_has_actionable() {  # <status-file> <start-offset>
   status_span_first_actionable_record "$1" "${2:-0}" > /dev/null
 }
 
+# The one fm-crew-state.sh read behind the two classifiers below; call it inside
+# $(...), because on Windows fm_exec_timed replaces the shell it runs in. There
+# a caller killed mid-read left this read running as an orphan, and on
+# 2026-10-08 two such orphans each held a core for hours (cause not proven).
+# The watchdog ends the read once the calling script ($$) is gone, and after
+# 600 seconds at the latest.
+_fm_crew_state_read() {  # <id>
+  case "${OSTYPE:-}" in
+    msys*|mingw*|cygwin*) fm_exec_timed 600 2 "$FM_CREW_STATE_BIN" "$1" ;;
+    *) "$FM_CREW_STATE_BIN" "$1" ;;
+  esac
+}
+
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
 # from bin/fm-crew-state.sh's one authoritative current-state line
 # ("state: <s> · source: <src> · <detail>"). Prints exactly one token:
@@ -2437,7 +2455,7 @@ status_span_has_actionable() {  # <status-file> <start-offset>
 crew_absorb_class() {  # <id>
   local id=$1 line state src
   [ -n "$id" ] || { printf 'none'; return; }
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  line=$(_fm_crew_state_read "$id" 2>/dev/null) || true
   case "$line" in state:*) ;; *) printf 'none'; return ;; esac
   state=${line#state: }; state=${state%% *}
   if [ "$state" = paused ]; then printf 'paused'; return; fi
@@ -2499,7 +2517,7 @@ FM_GATE_HUMAN_DECISION='ask-user: authority decision'
 crew_gate_awaits_human_decision() {  # <id> -> <run-id> on stdout
   local id=$1 line state src rest part human='' run=''
   [ -n "$id" ] || return 1
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  line=$(_fm_crew_state_read "$id" 2>/dev/null) || true
   case "$line" in state:*) ;; *) return 1 ;; esac
   state=${line#state: }; state=${state%% *}
   [ "$state" = parked ] || return 1
@@ -2638,7 +2656,7 @@ _fm_secondmate_status_new_lines_routine() {  # <status-file> <state>
   [ "$start" -le "$size" ] || start=0
   [ "$start" -lt "$size" ] || return 0
   chunk=$(_fm_status_read_span "$f" "$start" "$((size - start))") || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
     case "$line" in *corr=*) return 1 ;; esac
     status_line_verb "$line" verb

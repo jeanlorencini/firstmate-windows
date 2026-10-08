@@ -247,7 +247,8 @@ fm_backend_name() {
     return 0
   fi
   if [ -f "$FM_BACKEND_CONFIG_DIR/backend" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
+    # Emptied before each read, as _fm_status_event_scan in bin/fm-classify-lib.sh explains.
+    while line=; IFS= read -r line || [ -n "$line" ]; do
       v=$(printf '%s' "$line" | tr -d '[:space:]')
       if [ -n "$v" ]; then
         printf '%s' "$v"
@@ -335,7 +336,7 @@ fm_backend_required_tool_available() {  # <backend> <tool>
 fm_meta_get() {  # <meta-file> <key>
   local meta=$1 key=$2 line value=''
   [ -f "$meta" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
+  while line=; IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       "$key="*) value=${line#*=} ;;
     esac
