@@ -40,8 +40,11 @@ PATH=$_fm_win_dir/bin:${_fm_win_path%:}
 # /etc/profile rebuilds PATH ahead of this overlay's bin/, so PATH alone does
 # not make bin/curl win there. An exported function does: bash resolves a
 # function before PATH, and `export -f` carries it through the environment
-# to any child shell, login or not.
-curl() { "$_fm_win_dir/bin/curl" "$@"; }
+# to any child shell, login or not. Bake the absolute overlay path into the
+# function body now: $_fm_win_dir is unset below, and a late expansion would
+# turn this into /bin/curl, which does not exist on Git Bash and yields the
+# resolver's http 000 before any request leaves.
+eval "curl() { $(printf '%q' "$_fm_win_dir/bin/curl") \"\$@\"; }"
 export -f curl
 
 _fm_win_msys=
