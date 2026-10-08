@@ -2210,6 +2210,61 @@ EOF
   printf 'shell'
 }
 
+# fm_backend_herdr_pane_bash_launch_shell: whether <pane_id> can source a bash
+# launch file (`. file.sh`) typed into its terminal. Prints exactly one of:
+#   bash       - every foreground process is a recognized posix shell
+#   nonbash    - every foreground process is something else (PowerShell, cmd,
+#                or any other non-posix receiver); a bash source line would
+#                fail there
+#   unreadable - process-info failed, described a different pane, named an
+#                empty foreground, mixed shell and non-shell, or held a
+#                harness process (inconsistent with an agent-free relaunch)
+# One instantaneous process-info read; no settle loop. Relaunch adoption uses
+# this so a dead pane whose shell fell back to PowerShell (Windows Herdr
+# default) rebinds through a fresh pane instead of typing a bash source line
+# into pwsh.
+fm_backend_herdr_pane_bash_launch_shell() {  # <session> <pane_id>
+  local session=$1 pane_id=$2 info count i pid name argv0 args verdict
+  local saw_shell=0 saw_other=0
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane_id" 2>/dev/null) \
+    || { printf 'unreadable'; return 0; }
+  printf '%s' "$info" | jq -e --arg pane "$pane_id" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+  ' >/dev/null 2>&1 || { printf 'unreadable'; return 0; }
+  count=$(printf '%s' "$info" | jq -er \
+    '.result.process_info.foreground_processes | select(type == "array") | length' 2>/dev/null) \
+    || { printf 'unreadable'; return 0; }
+  [ "$count" -gt 0 ] || { printf 'unreadable'; return 0; }
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    pid=$(printf '%s' "$info" | jq -r --argjson i "$i" \
+      '.result.process_info.foreground_processes[$i].pid | select(type == "number") | floor' 2>/dev/null)
+    name=$(printf '%s' "$info" | jq -r --argjson i "$i" \
+      '.result.process_info.foreground_processes[$i].name // empty' 2>/dev/null)
+    argv0=$(printf '%s' "$info" | jq -r --argjson i "$i" '
+      .result.process_info.foreground_processes[$i] as $p
+      | (($p.argv // [])[0]) // $p.argv0 // empty' 2>/dev/null)
+    args=$(printf '%s' "$info" | jq -r --argjson i "$i" '
+      .result.process_info.foreground_processes[$i] as $p
+      | $p.cmdline // (($p.argv // []) | join(" ")) // empty' 2>/dev/null)
+    verdict=$(fm_agent_process_classify "$name" "$argv0" "$args" "$pid")
+    case "$verdict" in
+      shell) saw_shell=1 ;;
+      agent) printf 'unreadable'; return 0 ;;
+      *) saw_other=1 ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ "$saw_shell" -eq 1 ] && [ "$saw_other" -eq 0 ]; then
+    printf 'bash'
+  elif [ "$saw_other" -eq 1 ] && [ "$saw_shell" -eq 0 ]; then
+    printf 'nonbash'
+  else
+    printf 'unreadable'
+  fi
+}
+
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
 # dead|no-agent|stale-agent|live|unknown, from the JSON body of two read-only
 # calls plus, for a registered agent, the pane's process-level view - never

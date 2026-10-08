@@ -256,9 +256,11 @@ run_spawn() {  # <case-dir> <args...>
   # A claude spawn pre-registers workspace trust in the launching user's own
   # store (bin/fm-claude-trust.sh), so it runs against a throwaway HOME;
   # without it this suite would write the developer's real ~/.claude.json.
+  # FM_PLATFORM_OVERLAY is cleared so a Windows host's ambient overlay cannot
+  # wrap the fake herdr or slow hermetic relaunch cases.
   mkdir -p "$dir/user-home"
   env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SESSION -u HERDR_SOCKET_PATH \
-    -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID \
+    -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u FM_PLATFORM_OVERLAY \
     PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
     FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
@@ -1970,7 +1972,9 @@ if [ -f "$D/herdr-stopped" ]; then
 fi
 case "${1:-} ${2:-}" in
   'pane get')
-    if [ "${3:-}" = "$(cat "$D/herdr-pane")" ]; then
+    if [ -f "$D/herdr-pane-closed" ]; then
+      printf '{"error":{"code":"pane_not_found"}}\n'
+    elif [ "${3:-}" = "$(cat "$D/herdr-pane")" ]; then
       printf '{"result":{"pane":{"pane_id":"%s","foreground_cwd":"%s"}}}\n' \
         "${3:-}" "$(cat "$D/cwd")"
     else
@@ -1979,8 +1983,21 @@ case "${1:-} ${2:-}" in
       printf '{"error":{"code":"pane_not_found"}}\n'
     fi
     exit 0 ;;
+  'pane close')
+    # Models closing an unusable PowerShell (or other non-bash) pane so relaunch
+    # can rebind through a fresh one. Only the recorded survivor pane closes.
+    if [ "${3:-}" = "$(cat "$D/herdr-pane")" ]; then
+      : > "$D/herdr-pane-closed"
+      printf '%s\n' "$*" >> "$D/herdr-closed-panes"
+      printf '{"result":{"type":"pane_closed"}}\n'
+      exit 0
+    fi
+    echo "error: pane not found" >&2
+    exit 1 ;;
   'agent get')
-    if [ -f "$D/herdr-agent-registration" ]; then
+    if [ -f "$D/herdr-pane-closed" ]; then
+      printf '{"error":{"code":"pane_not_found"}}\n'
+    elif [ -f "$D/herdr-agent-registration" ]; then
       cat "$D/herdr-agent-registration"
     elif [ -f "$D/herdr-agent-live" ]; then
       # The agent came back with its server. Nothing here is reclaimable.
@@ -1993,8 +2010,22 @@ case "${1:-} ${2:-}" in
   'pane process-info')
     # A retained registration with a shell-only pane models an exited agent
     # whose Herdr status authority still belongs to its previous session.
-    if [ -f "$D/herdr-agent-registration" ]; then
+    if [ -f "$D/herdr-pane-closed" ]; then
+      printf '{"error":{"code":"pane_not_found"}}\n'
+    elif [ -f "$D/herdr-agent-registration" ]; then
       printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[]}}}\n' \
+        "$(cat "$D/herdr-pane")"
+    elif [ -f "$D/herdr-agent-live" ]; then
+      # After launch delivery the replacement agent is running.
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[{"pid":4243,"name":"claude","argv":["claude"],"cmdline":"claude"}]}}}\n' \
+        "$(cat "$D/herdr-pane")"
+    elif [ -f "$D/herdr-pwsh-shell" ]; then
+      # Agent-free pane whose foreground is PowerShell: the Windows Herdr
+      # fallback that cannot source a bash launch file.
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"pwsh.exe","argv":["C:\\\\Program Files\\\\PowerShell\\\\pwsh.exe"],"cmdline":"pwsh.exe"}]}}}\n' \
+        "$(cat "$D/herdr-pane")"
+    elif [ -f "$D/herdr-bash-shell" ]; then
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"bash.exe","argv":["bash"],"cmdline":"bash"}]}}}\n' \
         "$(cat "$D/herdr-pane")"
     else
       printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[{"pid":4243,"name":"claude","argv":["claude"],"cmdline":"claude"}]}}}\n' \
@@ -2008,6 +2039,10 @@ case "${1:-} ${2:-}" in
     # short line sourcing the staged launch file rather than the literal
     # command, so read that file back before deciding what was delivered -
     # exactly as the tmux fake above and tests/fixtures.sh do.
+    if [ -f "$D/herdr-pane-closed" ] || [ "${3:-}" != "$(cat "$D/herdr-pane")" ]; then
+      printf '{"error":{"code":"pane_not_found"}}\n'
+      exit 1
+    fi
     payload=${4:-}
     case "$payload" in
       ". '"*"'") staged=${payload#". '"}; staged=${staged%"'"}; [ ! -f "$staged" ] || payload=$(cat "$staged") ;;
@@ -2036,7 +2071,10 @@ case "${1:-} ${2:-}" in
     # record ends up naming is the one this call minted.
     printf '%s\n' "$*" >> "$D/herdr-created-tabs"
     printf '{"result":{"tab":{"tab_id":"tabnew"},"root_pane":{"pane_id":"%%9"}}}\n'
-    # From here on the new pane is the one that reads back.
+    # From here on the new pane is the one that reads back. Clearing a prior
+    # pane-close marker is what lets a PowerShell-fallback rebind deliver into
+    # the fresh pane after closing the unusable one.
+    rm -f "$D/herdr-pane-closed" "$D/herdr-pwsh-shell" "$D/herdr-bash-shell"
     printf '%s' '%9' > "$D/herdr-pane"
     exit 0 ;;
 esac
@@ -2227,6 +2265,69 @@ test_herdr_rebind_stays_in_the_recorded_session() {
   [ "$(meta_field "$dir" rl73 herdr_pane_id)" = '%9' ] \
     || fail "the rebound record should name the pane the reclaim minted, got $(meta_field "$dir" rl73 herdr_pane_id)"
   pass "reclaim: a herdr rebind is created in the session the record names, never the ambient one"
+}
+
+test_herdr_relaunch_rebinds_a_powershell_fallback_pane() {
+  local dir out rc=0 log
+  # Live server, agent-free pane whose foreground is PowerShell: the Windows
+  # Herdr fallback that cannot source `. /tmp/.../launch.sh`. Relaunch must
+  # close that one pane and mint a fresh endpoint in the same worktree instead
+  # of typing a bash source line into pwsh.
+  herdr_case_or_skip pwsh-fallback rl80 || {
+    echo "skip - herdr PowerShell-fallback relaunch needs jq"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  rm -f "$dir/fake/herdr-stopped"
+  : > "$dir/fake/herdr-pwsh-shell"
+
+  out=$(run_spawn "$dir" rl80 --relaunch --harness claude) || rc=$?
+  log=$(cat "$dir/fake/herdr-log")
+  expect_code 0 "$rc" "a PowerShell-fallback pane must relaunch by rebinding"$'\n'"$out"$'\n'"$log"
+
+  assert_present "$dir/fake/herdr-closed-panes" \
+    "the unusable PowerShell pane must be closed before rebind"
+  assert_contains "$(cat "$dir/fake/herdr-closed-panes")" "pane close %7" \
+    "only the recorded pane may be closed"
+  assert_contains "$log" "tab create" \
+    "closing the PowerShell pane must lead to a fresh tab"
+  assert_contains "$out" "window=fmlab:%9" \
+    "the replacement endpoint must be the fresh pane"
+  [ "$(meta_field "$dir" rl80 herdr_pane_id)" = '%9' ] \
+    || fail "the rebound record should name the fresh pane, got $(meta_field "$dir" rl80 herdr_pane_id)"
+  [ "$(meta_field "$dir" rl80 worktree)" = "$dir/wt" ] \
+    || fail "a PowerShell-fallback rebind must keep the recorded worktree"
+  assert_contains "$log" "pane run %9 . '" \
+    "the launch brief must be delivered into the fresh pane, not the PowerShell one"
+  assert_not_contains "$log" "pane run %7 . '" \
+    "a bash source line must never be typed into the PowerShell pane"
+  pass "relaunch: a dead Herdr pane whose shell is PowerShell is closed and rebound, never sourced into"
+}
+
+test_herdr_relaunch_still_adopts_a_bash_shell_pane() {
+  local dir out rc=0 log
+  # Positive control: an agent-free pane whose foreground is bash stays adopted.
+  herdr_case_or_skip bash-adopt rl81 || {
+    echo "skip - herdr bash-adopt relaunch needs jq"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  rm -f "$dir/fake/herdr-stopped"
+  : > "$dir/fake/herdr-bash-shell"
+
+  out=$(run_spawn "$dir" rl81 --relaunch --harness claude) || rc=$?
+  log=$(cat "$dir/fake/herdr-log")
+  expect_code 0 "$rc" "a bash shell pane must still be adopted"$'\n'"$out"$'\n'"$log"
+
+  assert_absent "$dir/fake/herdr-closed-panes" \
+    "an adoptable bash pane must not be closed"
+  assert_not_contains "$log" "tab create" \
+    "adopting a bash pane must not open a second tab"
+  assert_contains "$out" "window=fmlab:%7" \
+    "the adopted endpoint must stay the recorded pane"
+  assert_contains "$log" "pane run %7 . '" \
+    "the launch brief must be delivered into the adopted bash pane"
+  pass "relaunch: a dead Herdr pane whose shell is bash is still adopted"
 }
 
 test_herdr_reclaim_refuses_an_agent_that_came_back() {
@@ -2452,6 +2553,8 @@ test_herdr_relaunch_resumes_only_the_registered_pi_session
 test_herdr_reclaim_adopts_a_pane_that_outlived_its_server
 test_herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server
 test_herdr_rebind_stays_in_the_recorded_session
+test_herdr_relaunch_rebinds_a_powershell_fallback_pane
+test_herdr_relaunch_still_adopts_a_bash_shell_pane
 test_herdr_reclaim_refuses_an_agent_that_came_back
 test_herdr_reclaim_keeps_the_task_whole
 test_herdr_reclaim_of_a_secondmate_names_its_own_owner

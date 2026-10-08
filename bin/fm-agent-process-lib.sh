@@ -30,7 +30,17 @@ unset _FM_AGENT_PROCESS_LIB_DIR
 fm_agent_process_classify_name() {  # <path> [argv0] -> agent|shell|other
   local path=$1 argv0=${2:-} base
   base=${path##*/}
+  # Herdr on Windows reports argv0 as a drive path with backslashes
+  # (C:\Program Files\Git\usr\bin\bash.exe). ##*/ only strips forward
+  # slashes, so take the final backslash component too.
+  base=${base##*\\}
   base=${base#-}
+  # Windows process names often carry a .exe suffix (bash.exe, pwsh.exe,
+  # claude.exe). Strip it so the same basename rules classify them; a no-op
+  # on Unix where that suffix does not appear.
+  case "$base" in
+    *.[Ee][Xx][Ee]) base=${base%.*} ;;
+  esac
   case "$base" in
     # muse is anchored rather than globbed like its neighbours: its installed
     # binary is muse-bin-<version> (the launcher execs it, so the version is the

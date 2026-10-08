@@ -1761,7 +1761,38 @@ if [ "$RELAUNCH" -eq 1 ]; then
     esac
   fi
   case "$RELAUNCH_STATE" in
-    dead) ;;
+    dead)
+      # A dead pane is adoptable only when its foreground shell can source the
+      # bash launch file spawn types into it. On Windows Herdr the pane shell
+      # is often PowerShell after an agent exits; typing `. /tmp/.../launch.sh`
+      # into pwsh fails, and the proven recovery is to close that one pane and
+      # rebind through a fresh one (same worktree). Close only the recorded
+      # target, never another task's pane, and never the worktree.
+      if [ "$BACKEND" = herdr ]; then
+        fm_backend_herdr_parse_target "$RELAUNCH_TARGET" || {
+          echo "error: task $ID's recorded endpoint $RELAUNCH_TARGET could not be parsed while checking whether its shell can accept a bash launch" >&2
+          exit 1
+        }
+        case "$(fm_backend_herdr_pane_bash_launch_shell "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
+          nonbash)
+            if ! fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane close "$FM_BACKEND_HERDR_PANE" >/dev/null 2>&1; then
+              echo "error: task $ID's recorded endpoint $RELAUNCH_TARGET holds a non-bash shell that cannot source a launch file, and closing that pane failed; refusing rather than typing a bash source line into it" >&2
+              exit 1
+            fi
+            case "$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
+              dead)
+                RELAUNCH_STATE=missing
+                RELAUNCH_REBIND=1
+                ;;
+              *)
+                echo "error: task $ID's recorded endpoint $RELAUNCH_TARGET still reads present after closing its non-bash shell pane; refusing rather than launching into an unusable endpoint" >&2
+                exit 1
+                ;;
+            esac
+            ;;
+        esac
+      fi
+      ;;
     missing) RELAUNCH_REBIND=1 ;;
     *)
       echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2

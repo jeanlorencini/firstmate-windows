@@ -548,6 +548,76 @@ test_registered_agent_with_a_live_foreground_process_stays_alive() {
   pass "herdr stale registration: a registered agent with a live Pi foreground process still reads alive"
 }
 
+# --- bash launch shell (PowerShell-fallback relaunch) -----------------------
+#
+# Relaunch types `. /tmp/.../launch.sh` into the adopted pane. A Windows Herdr
+# pane whose agent exited can fall back to PowerShell, which cannot source that
+# line. fm_backend_herdr_pane_bash_launch_shell is the one instantaneous read
+# that decides adopt-vs-rebind before any source line is typed.
+
+bash_launch_shell_case() {  # <dir-suffix> <process-info-body|->
+  local dir="$TMP_ROOT/bash-launch-$1" resp log fb
+  mkdir -p "$dir/responses"; resp="$dir/responses"; log="$dir/log"; : > "$log"
+  [ "$2" = - ] || printf '%s\n' "$2" > "$resp/1.out"
+  [ "$2" != - ] || printf '1\n' > "$resp/1.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_bash_launch_shell fmtest w1:p2' "$ROOT"
+}
+
+test_bash_launch_shell_reports_nonbash_for_powershell() {
+  local out
+  out=$(bash_launch_shell_case pwsh \
+    '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"pwsh.exe","argv":["C:\\\\Program Files\\\\PowerShell\\\\pwsh.exe"],"cmdline":"pwsh.exe"}]}}}')
+  [ "$out" = nonbash ] \
+    || fail "a PowerShell foreground must read nonbash for launch adoption, got '$out'"
+  pass "herdr bash-launch shell: pwsh.exe is nonbash"
+}
+
+test_bash_launch_shell_reports_bash_for_posix_shell() {
+  local out
+  out=$(bash_launch_shell_case bash \
+    '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"bash.exe","argv0":"C:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\bash.exe","argv":["C:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\bash.exe","--rcfile","pane-rc.sh","-i"],"cmdline":"bash.exe --rcfile pane-rc.sh -i"}]}}}')
+  [ "$out" = bash ] \
+    || fail "a bash.exe foreground with a Windows argv0 path must read bash for launch adoption, got '$out'"
+  out=$(bash_launch_shell_case zsh \
+    '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"zsh","argv0":"zsh","argv":["-zsh"],"cmdline":"-zsh"}]}}}')
+  [ "$out" = bash ] \
+    || fail "a zsh foreground must read bash for launch adoption, got '$out'"
+  pass "herdr bash-launch shell: bash.exe and zsh are bash"
+}
+
+test_bash_launch_shell_reports_unreadable_for_agent_or_empty() {
+  local out
+  out=$(bash_launch_shell_case agent \
+    '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":4242,"foreground_processes":[{"pid":4243,"name":"claude","argv":["claude"],"cmdline":"claude"}]}}}')
+  [ "$out" = unreadable ] \
+    || fail "a harness foreground must read unreadable (do not rebind on uncertainty), got '$out'"
+  out=$(bash_launch_shell_case empty \
+    '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":4242,"foreground_processes":[]}}}')
+  [ "$out" = unreadable ] \
+    || fail "an empty foreground must read unreadable, got '$out'"
+  pass "herdr bash-launch shell: agent and empty foregrounds are unreadable"
+}
+
+test_agent_process_classify_strips_windows_exe_suffix() {
+  local out
+  # shellcheck source=bin/fm-agent-process-lib.sh
+  . "$ROOT/bin/fm-agent-process-lib.sh"
+  out=$(fm_agent_process_classify_name bash.exe)
+  [ "$out" = shell ] || fail "bash.exe must classify as shell, got '$out'"
+  out=$(fm_agent_process_classify_name pwsh.exe)
+  [ "$out" = other ] || fail "pwsh.exe must classify as other, got '$out'"
+  out=$(fm_agent_process_classify_name claude.exe)
+  [ "$out" = agent ] || fail "claude.exe must classify as agent, got '$out'"
+  out=$(fm_agent_process_classify_name 'C:\Program Files\Git\usr\bin\bash.exe')
+  [ "$out" = shell ] || fail "a Windows drive-path bash.exe argv0 must classify as shell, got '$out'"
+  out=$(fm_agent_process_classify bash.exe 'C:\Program Files\Git\usr\bin\bash.exe' \
+    '"C:\Program Files\Git\usr\bin\bash.exe" --rcfile pane-rc.sh -i')
+  [ "$out" = shell ] || fail "name=bash.exe with a Windows argv0 path must classify as shell, got '$out'"
+  pass "agent-process classify: Windows .exe suffixes and backslash paths strip before basename rules"
+}
+
 # --- the bound agent session reference (relaunch session continuity) --------
 #
 # Herdr applies only reports carrying the session identity it bound to a pane,
@@ -5900,6 +5970,10 @@ test_stale_registration_ignores_status_and_reads_the_process
 test_pane_agent_session_ref_reports_a_resumable_reference_with_its_agent
 test_pane_agent_session_ref_degrades_to_nothing_when_not_resumable
 test_registered_agent_with_a_live_foreground_process_stays_alive
+test_bash_launch_shell_reports_nonbash_for_powershell
+test_bash_launch_shell_reports_bash_for_posix_shell
+test_bash_launch_shell_reports_unreadable_for_agent_or_empty
+test_agent_process_classify_strips_windows_exe_suffix
 test_registered_agent_with_a_non_shell_foreground_process_stays_alive
 test_transient_prompt_helper_settles_into_stale_agent
 test_exhausted_settle_window_keeps_a_non_shell_foreground_live
