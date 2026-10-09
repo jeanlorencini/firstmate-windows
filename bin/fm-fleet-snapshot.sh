@@ -154,6 +154,9 @@ esac
 # hang or explode the parent snapshot.
 FM_SNAPSHOT_SECONDMATES=${FM_SNAPSHOT_SECONDMATES:-20}
 FM_SNAPSHOT_CREW_STATE_TIMEOUT=${FM_SNAPSHOT_CREW_STATE_TIMEOUT:-10}
+# Cheap endpoint-presence probe budget. On Windows a stuck herdr `pane get` can
+# otherwise sit for tens of seconds per task and dominate the snapshot wall.
+FM_SNAPSHOT_ENDPOINT_TIMEOUT=${FM_SNAPSHOT_ENDPOINT_TIMEOUT:-3}
 FM_SNAPSHOT_LOCAL_READ_CONCURRENCY=${FM_SNAPSHOT_LOCAL_READ_CONCURRENCY:-8}
 FM_SNAPSHOT_BUDGET=${FM_SNAPSHOT_BUDGET:-5}
 FM_SNAPSHOT_CACHE_DIR=${FM_SNAPSHOT_CACHE_DIR:-$STATE/secondmate-summary-cache}
@@ -187,6 +190,7 @@ case "$FM_SNAPSHOT_SECONDMATES" in
     ;;
 esac
 validate_positive_bound FM_SNAPSHOT_CREW_STATE_TIMEOUT "$FM_SNAPSHOT_CREW_STATE_TIMEOUT"
+validate_positive_bound FM_SNAPSHOT_ENDPOINT_TIMEOUT "$FM_SNAPSHOT_ENDPOINT_TIMEOUT"
 validate_positive_bound FM_SNAPSHOT_LOCAL_READ_CONCURRENCY "$FM_SNAPSHOT_LOCAL_READ_CONCURRENCY"
 validate_positive_bound FM_SNAPSHOT_BUDGET "$FM_SNAPSHOT_BUDGET"
 validate_positive_bound FM_SNAPSHOT_SECONDMATE_MAX_BYTES "$FM_SNAPSHOT_SECONDMATE_MAX_BYTES"
@@ -230,6 +234,12 @@ esac
 # shellcheck source=bin/fm-merge-authority-lib.sh
 . "$SCRIPT_DIR/fm-merge-authority-lib.sh"
 
+# Optional phase timing for Windows spawn profiling (FM_SNAPSHOT_PHASE_LOG=path).
+fm_phase() {
+  [ -n "${FM_SNAPSHOT_PHASE_LOG:-}" ] || return 0
+  printf 'PHASE %s %s\n' "$1" "$SECONDS" >>"$FM_SNAPSHOT_PHASE_LOG"
+}
+
 usage() {
   cat <<'EOF'
 usage: fm-fleet-snapshot.sh --json
@@ -265,8 +275,10 @@ home with neither a valid current ledger nor a valid current cached copy is
 reported unreadable with the reason; collection never computes a summary in
 that home.
 Each local per-task current-state read is bounded by FM_SNAPSHOT_CREW_STATE_TIMEOUT
-(default 10 seconds); a read that hits the bound reports state unknown. Local task
-observations run concurrently, up to FM_SNAPSHOT_LOCAL_READ_CONCURRENCY (default 8).
+(default 10 seconds); a read that hits the bound reports state unknown. The cheap
+endpoint-presence probe is bounded by FM_SNAPSHOT_ENDPOINT_TIMEOUT (default 3
+seconds); a hit is treated as absent. Local task observations run concurrently,
+up to FM_SNAPSHOT_LOCAL_READ_CONCURRENCY (default 8).
 Remote secondmate endpoint liveness is not probed by this command.
 Terminal contradiction evidence uses
 FM_SNAPSHOT_TERMINAL_LINES, FM_SNAPSHOT_TERMINAL_BYTES, and
@@ -297,24 +309,185 @@ esac
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; exit 1; }
 
+# On Windows the overlay's bin/jq is a bash shim (plus -b). Resolving a real
+# binary once here makes every later jq call in this process (and in $()
+# children that inherit the function) skip that extra bash spawn. Linux and
+# macOS keep their ordinary jq on PATH; the function then just forwards.
+# Skip overlay wrappers on PATH: FM_WIN_JQ_SHIM (current) and the historical
+# "jq on Windows writes CRLF" header (pre-marker home copies). Without both,
+# a mixed PATH mutual-execs until ARG_MAX.
+fm_snapshot_jq_is_shim() {  # <path> -> 0 when path is the Windows overlay shim
+  local f=$1 line n=0
+  [ -f "$f" ] || return 1
+  # Real jq.exe is a megabyte binary: bail before any line scan unless the
+  # first two bytes are a shebang (same gate as platform/windows/bin/jq).
+  IFS= read -r -n 2 line <"$f" || return 1
+  [ "$line" = "#!" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *FM_WIN_JQ_SHIM*) return 0 ;;
+      *'jq on Windows writes CRLF'*) return 0 ;;
+    esac
+    n=$((n + 1))
+    [ "$n" -lt 16 ] || break
+  done <"$f"
+  return 1
+}
+fm_snapshot_install_jq() {
+  # Prefer a real jq binary as a local function so in-process calls skip the
+  # Windows overlay's bash shim. Do not export -f: on native Windows the
+  # exported function body plus a large --argjson argv tips CreateProcess
+  # ARG_MAX. Child scripts still reach the real binary through FM_WIN_JQ_BIN
+  # (shim exec) or PATH.
+  local candidate first path_elem _fm_snap_path
+  if declare -F jq >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -n "${FM_WIN_JQ_BIN:-}" ] && [ -x "$FM_WIN_JQ_BIN" ] \
+    && ! fm_snapshot_jq_is_shim "$FM_WIN_JQ_BIN"; then
+    jq() { "$FM_WIN_JQ_BIN" -b "$@"; }
+    return 0
+  fi
+  candidate=$(command -v jq) || return 1
+  first=
+  if [ -f "$candidate" ] && IFS= read -r first < "$candidate"; then
+    case "$first" in
+      '#!'*)
+        _fm_snap_path=$PATH
+        while [ -n "$_fm_snap_path" ]; do
+          path_elem=${_fm_snap_path%%:*}
+          if [ "$path_elem" = "$_fm_snap_path" ]; then
+            _fm_snap_path=
+          else
+            _fm_snap_path=${_fm_snap_path#*:}
+          fi
+          [ -n "$path_elem" ] || continue
+          [ -x "$path_elem/jq" ] || continue
+          [ "$path_elem/jq" -ef "$candidate" ] && continue
+          fm_snapshot_jq_is_shim "$path_elem/jq" && continue
+          FM_WIN_JQ_BIN=$path_elem/jq
+          export FM_WIN_JQ_BIN
+          jq() { "$FM_WIN_JQ_BIN" -b "$@"; }
+          return 0
+        done
+        ;;
+    esac
+  fi
+}
+fm_snapshot_install_jq
+
+# Run an already-loaded shell function under a wall deadline without spawning a
+# fresh bash that re-sources libraries. The background job inherits functions
+# from this shell; a hit on the bound kills the job and returns 124.
+fm_snapshot_run_fn_timed() {  # <seconds> <command> [args...]
+  local seconds=$1 rcfile pid deadline status=124 kill_grace=0
+  shift
+  case "$seconds" in
+    ''|*[!0-9]*|0) return 124 ;;
+  esac
+  rcfile=$(mktemp "${TMPDIR:-/tmp}/fm-snap-fn.XXXXXX") || return 124
+  (
+    "$@"
+    printf '%s\n' "$?" >"$rcfile"
+  ) &
+  pid=$!
+  deadline=$((SECONDS + seconds))
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill "$pid" 2>/dev/null || true
+      # Brief grace so a cooperative child can exit before KILL.
+      while [ "$kill_grace" -lt 5 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.05 2>/dev/null || sleep 1
+        kill_grace=$((kill_grace + 1))
+      done
+      kill -9 "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -f -- "$rcfile"
+      return 124
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+  wait "$pid" 2>/dev/null || true
+  status=$(cat "$rcfile" 2>/dev/null || printf '124\n')
+  rm -f -- "$rcfile"
+  case "$status" in
+    ''|*[!0-9]*) return 124 ;;
+  esac
+  return "$status"
+}
+
 bool_json() {
   if [ "$1" = 1 ]; then printf 'true'; else printf 'false'; fi
+}
+
+# Fork-free path presence for the final per-task jq (avoids one jq + $() each).
+path_present_args() {  # <path-var> <present-var> <contract-path> [<observed-path>]
+  local observed=${4:-$3}
+  printf -v "$1" '%s' "$3"
+  if [ -e "$observed" ]; then
+    printf -v "$2" '%s' true
+  else
+    printf -v "$2" '%s' false
+  fi
+}
+
+# Read a JSON string field from a small fixed-shape object without jq.
+# Accepts both compact ("k":"v") and spaced ("k": "v") forms.
+fm_snapshot_json_string_field_to() {  # <out-var> <json> <key>
+  local __json=$2 __key=$3 __rest
+  case "$__json" in
+    *"\"$__key\":"*) ;;
+    *) printf -v "$1" '%s' ''; return 1 ;;
+  esac
+  __rest=${__json#*\"$__key\":}
+  while [ -n "$__rest" ]; do
+    case "$__rest" in
+      [[:space:]]*) __rest=${__rest#?} ;;
+      *) break ;;
+    esac
+  done
+  case "$__rest" in
+    \"*)
+      __rest=${__rest#\"}
+      printf -v "$1" '%s' "${__rest%%\"*}"
+      return 0
+      ;;
+  esac
+  printf -v "$1" '%s' ''
+  return 1
 }
 
 path_present_json() {  # <contract-path> [<observed-path>]
   local path=$1 observed=${2:-$1} present=0
   [ -e "$observed" ] && present=1
-  jq -n --arg path "$path" --argjson present "$(bool_json "$present")" \
-    '{path:$path,present:$present}'
+  if [ "$present" = 1 ]; then
+    jq -n --arg path "$path" --argjson present true '{path:$path,present:$present}'
+  else
+    jq -n --arg path "$path" --argjson present false '{path:$path,present:$present}'
+  fi
 }
 
 meta_value() {  # <meta-file> <key>
   fm_meta_get "$1" "$2"
 }
 
+# Fork-free last non-whitespace line (replaces grep|tail on the hot path).
+last_nonempty_line_to() {  # <out-var> <file>
+  local line='' last=''
+  [ -f "$2" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *[![:space:]]*) last=$line ;;
+    esac
+  done < "$2"
+  [ -n "$last" ] || return 1
+  printf -v "$1" '%s' "$last"
+}
+
 last_nonempty_line() {  # <file>
-  [ -f "$1" ] || return 1
-  grep -v '^[[:space:]]*$' "$1" 2>/dev/null | tail -1
+  local line
+  last_nonempty_line_to line "$1" || return 1
+  printf '%s\n' "$line"
 }
 
 # A local crew-state read is bounded so one slow child cannot extend this
@@ -350,20 +523,25 @@ crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
       esac
       ;;
   esac
-  jq -n --arg raw "$raw" --arg state "$state" --arg source "$source" --arg detail "$detail" \
+  # -c: some Windows jq builds pretty-print even into a pipe; compact keeps the
+  # bash field parse below and endpoint derivation fork-free.
+  jq -nc --arg raw "$raw" --arg state "$state" --arg source "$source" --arg detail "$detail" \
     '{state:$state,source:$source,detail:$detail,raw:$raw}'
 }
 
 status_event_json() {  # <observed-status-log> [<contract-path>]
-  local log=$1 path=${2:-$1} present=0 raw='' verb='' note='' epoch=null age=null
+  local log=$1 path=${2:-$1} present=false raw='' verb='' note='' epoch='' age=null
   if [ -f "$log" ]; then
-    present=1
-    raw=$(last_nonempty_line "$log" || true)
-    verb=$(status_line_verb "$raw")
-    note=$(status_line_note "$raw")
-    epoch=$(status_line_at_epoch "$raw") || epoch=null
-    if [ "$epoch" != null ] && [ "$epoch" -le "$SNAPSHOT_EPOCH" ]; then
-      age=$((SNAPSHOT_EPOCH - epoch))
+    present=true
+    last_nonempty_line_to raw "$log" || raw=''
+    status_line_verb "$raw" verb
+    status_line_note "$raw" note
+    if _fm_status_at_epoch "$raw" epoch; then
+      if [ -n "$epoch" ] && [ "$epoch" -le "$SNAPSHOT_EPOCH" ]; then
+        age=$((SNAPSHOT_EPOCH - epoch))
+      fi
+    else
+      epoch=''
     fi
   fi
   jq -n \
@@ -372,7 +550,7 @@ status_event_json() {  # <observed-status-log> [<contract-path>]
     --arg verb "$verb" \
     --arg note "$note" \
     --argjson age "$age" \
-    --argjson present "$(bool_json "$present")" \
+    --argjson present "$present" \
     '{path:$path,present:$present,kind:"event_history",last_event:{state:$verb,note:$note,raw:$raw,age_seconds:$age}}'
 }
 
@@ -614,9 +792,9 @@ snapshot_task_generation_is_current() {  # <captured-meta> <id>
   local captured_meta=$1 id=$2 current_meta captured_gen current_gen captured_contents current_contents
   current_meta="$STATE/$id.meta"
   [ -f "$current_meta" ] || return 1
-  captured_gen=$(meta_value "$captured_meta" spawn_gen)
+  fm_meta_get_to captured_gen "$captured_meta" spawn_gen
   if [ -n "$captured_gen" ]; then
-    current_gen=$(meta_value "$current_meta" spawn_gen)
+    fm_meta_get_to current_gen "$current_meta" spawn_gen
     [ "$current_gen" = "$captured_gen" ]
   else
     # Legacy metadata has no generation token. Exact equality is the strongest
@@ -631,7 +809,8 @@ prefetch_task_observations() {  # <meta> <id>
   local meta=$1 id=$2 remote_host current_file endpoint_file current_pid='' current_rc=0
   local status_log status_capture report_path report_capture
   local kind backend target endpoint_exists=null agent_alive=not_checked generation_current=1
-  remote_host=$(meta_value "$meta" remote_host)
+  local _fm_snap_src='' _fm_snap_cur=''
+  fm_meta_get_to remote_host "$meta" remote_host
   current_file="$SNAPSHOT_TASK_DIR/$id.json"
   endpoint_file="$SNAPSHOT_TASK_DIR/$id.endpoint"
   status_log="$STATE/$id.status"
@@ -652,17 +831,41 @@ prefetch_task_observations() {  # <meta> <id>
   elif [ "$generation_current" = 1 ]; then
     crew_state_json "$id" "$meta" "$status_capture" > "$current_file" &
     current_pid=$!
-    kind=$(meta_value "$meta" kind)
-    backend=$(fm_backend_of_meta "$meta")
-    target=$(fm_backend_target_of_meta "$meta")
+    fm_meta_get_to kind "$meta" kind
+    fm_backend_of_meta_to backend "$meta"
+    fm_backend_target_of_meta_to target "$meta"
+    # Cheap exists for every local task; agent_alive only for secondmates
+    # (same split as before this spawn-cut work). Bound Herdr pane/agent
+    # probes: an unreadable herdr get was ~20s each on Windows and dominated
+    # snapshot wall. Timeout => exists false / agent_alive unknown, matching
+    # an unreadable probe. tmux and other backends stay on the unbound path
+    # so fixture and live non-herdr rows stay byte-identical.
     if [ -n "$target" ]; then
-      if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
+      if [ "$backend" = herdr ]; then
+        if fm_snapshot_run_fn_timed "$FM_SNAPSHOT_ENDPOINT_TIMEOUT" \
+          fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
+          endpoint_exists=true
+        else
+          endpoint_exists=false
+        fi
+      elif fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
         endpoint_exists=true
       else
         endpoint_exists=false
       fi
       if [ "$kind" = secondmate ]; then
-        agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
+        if [ "$backend" = herdr ]; then
+          _fm_snap_alive_file=$SNAPSHOT_TASK_DIR/$id.alive
+          if fm_snapshot_run_fn_timed "$FM_SNAPSHOT_ENDPOINT_TIMEOUT" \
+            fm_backend_agent_alive "$backend" "$target" >"$_fm_snap_alive_file" 2>/dev/null; then
+            agent_alive=$(tr -d '\r\n' <"$_fm_snap_alive_file" 2>/dev/null || printf unknown)
+          else
+            agent_alive=unknown
+          fi
+          [ -n "$agent_alive" ] || agent_alive=unknown
+        else
+          agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
+        fi
       fi
     fi
   else
@@ -699,7 +902,8 @@ prefetch_task_current_states() {
   # composition one coherent task manifest even if publication or teardown races it.
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
-    id=$(basename "$meta" .meta)
+    id=${meta##*/}
+    id=${id%.meta}
     captured_meta="$SNAPSHOT_TASK_DIR/$id.meta"
     if ! cp -- "$meta" "$captured_meta" 2>"$captured_meta.copy-error"; then
       # Teardown may unlink a task after the glob selected it but before cp opens
@@ -719,7 +923,8 @@ prefetch_task_current_states() {
   done
   while [ "$index" -lt "$SNAPSHOT_TASK_META_COUNT" ]; do
     meta=${SNAPSHOT_TASK_METAS[index]}
-    id=$(basename "$meta" .meta)
+    id=${meta##*/}
+    id=${id%.meta}
     prefetch_task_observations "$meta" "$id" &
     pids[active]=$!
     active=$((active + 1))
@@ -742,39 +947,68 @@ prefetch_task_current_states() {
 task_json_lines() {
   local meta original_meta id kind harness mode yolo project worktree home projects spawn_gen backend target status_log report_path
   local remote_host remote_root current_file endpoint_file observation_line index=0
-  local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
-  local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
-  local open_decisions_tsv open_decisions_json
+  local pr pr_source current_json endpoint_exists agent_alive
+  local current_state current_source report_present=false pr_from_status
+  local open_decisions_file task_out_file
+  local event_path event_present event_raw event_verb event_note event_age event_epoch
+  local meta_path meta_present report_contract report_present_json worktree_path_arg worktree_present
+  local home_path_arg home_present pr_head
+  local tasks_dir
+  local _remote_backend _remote_target _backend_field _window _terminal
+
+  tasks_dir=$SNAPSHOT_TASK_DIR/composed
+  mkdir -p "$tasks_dir" || return 1
 
   while [ "$index" -lt "$SNAPSHOT_TASK_META_COUNT" ]; do
     meta=${SNAPSHOT_TASK_METAS[index]}
     index=$((index + 1))
-    id=$(basename "$meta" .meta)
+    id=${meta##*/}
+    id=${id%.meta}
+    fm_phase "task_json_begin_$id"
     original_meta="$STATE/$id.meta"
-    kind=$(meta_value "$meta" kind)
+
+    # One pass over the captured meta: avoids ~15 $(meta_value)/backend forks.
+    kind=ship; harness=; mode=; yolo=; project=; worktree=; home=; projects=; spawn_gen=; branch=
+    remote_host=; remote_root=; backend=; target=; pr=; pr_head=; _remote_backend=; _remote_target=
+    _backend_field=; _window=; _terminal=
+    while IFS= read -r observation_line || [ -n "$observation_line" ]; do
+      case "$observation_line" in
+        kind=*) kind=${observation_line#*=} ;;
+        harness=*) harness=${observation_line#*=} ;;
+        mode=*) mode=${observation_line#*=} ;;
+        yolo=*) yolo=${observation_line#*=} ;;
+        project=*) project=${observation_line#*=} ;;
+        worktree=*) worktree=${observation_line#*=} ;;
+        home=*) home=${observation_line#*=} ;;
+        projects=*) projects=${observation_line#*=} ;;
+        spawn_gen=*) spawn_gen=${observation_line#*=} ;;
+        branch=*) branch=${observation_line#*=} ;;
+        remote_host=*) remote_host=${observation_line#*=} ;;
+        remote_root=*) remote_root=${observation_line#*=} ;;
+        remote_backend=*) _remote_backend=${observation_line#*=} ;;
+        remote_target=*) _remote_target=${observation_line#*=} ;;
+        backend=*) _backend_field=${observation_line#*=} ;;
+        window=*) _window=${observation_line#*=} ;;
+        terminal=*) _terminal=${observation_line#*=} ;;
+        pr=*) pr=${observation_line#*=} ;;
+        pr_head=*) pr_head=${observation_line#*=} ;;
+      esac
+    done < "$meta"
     [ -n "$kind" ] || kind=ship
-    harness=$(meta_value "$meta" harness)
-    mode=$(meta_value "$meta" mode)
-    yolo=$(meta_value "$meta" yolo)
-    project=$(meta_value "$meta" project)
-    worktree=$(meta_value "$meta" worktree)
-    home=$(meta_value "$meta" home)
-    projects=$(meta_value "$meta" projects)
-    spawn_gen=$(meta_value "$meta" spawn_gen)
-    branch=$(meta_value "$meta" branch)
-    remote_host=$(meta_value "$meta" remote_host)
-    remote_root=$(meta_value "$meta" remote_root)
     if [ -n "$remote_host" ]; then
-      backend=$(meta_value "$meta" remote_backend)
-      [ -n "$backend" ] || backend=unknown
-      target=$(meta_value "$meta" remote_target)
+      backend=${_remote_backend:-unknown}
+      target=$_remote_target
     else
-      backend=$(fm_backend_of_meta "$meta")
-      target=$(fm_backend_target_of_meta "$meta")
+      backend=${_backend_field:-tmux}
+      if [ "$backend" = orca ] && [ -n "$_terminal" ]; then
+        target=$_terminal
+      else
+        target=$_window
+      fi
     fi
+
     status_log="$SNAPSHOT_TASK_DIR/$id.status"
     report_path="$SNAPSHOT_TASK_DIR/$id.report"
-    pr=$(meta_value "$meta" pr)
     pr_source=meta
     if [ -z "$pr" ]; then
       pr_from_status=$(first_pr_url_in_file "$status_log" || true)
@@ -790,11 +1024,37 @@ task_json_lines() {
       snapshot_task_cleanup
       return 1
     }
-    event_json=$(status_event_json "$status_log" "$STATE/$id.status")
-    last_event_raw=$(printf '%s' "$event_json" | jq -r '.last_event.raw // ""')
-    read -r current_state current_source < <(
-      printf '%s' "$current_json" | jq -r '[.state // "", .source // ""] | @tsv'
-    )
+
+    # Lifecycle gate needs current_state/source only. Parse them from the fixed
+    # crew-state JSON shape without a jq spawn (each jq costs hundreds of ms on
+    # native Windows). Tolerates compact and spaced forms.
+    current_state=unknown
+    current_source=none
+    fm_snapshot_json_string_field_to current_state "$current_json" state \
+      || current_state=unknown
+    fm_snapshot_json_string_field_to current_source "$current_json" source \
+      || current_source=none
+
+    # Status-event fields without a separate jq: fold into the per-task object.
+    event_path=$STATE/$id.status
+    event_present=false
+    event_raw=''
+    event_verb=''
+    event_note=''
+    event_age=null
+    if [ -f "$status_log" ]; then
+      event_present=true
+      last_nonempty_line_to event_raw "$status_log" || event_raw=''
+      status_line_verb "$event_raw" event_verb
+      status_line_note "$event_raw" event_note
+      if _fm_status_at_epoch "$event_raw" event_epoch; then
+        if [ -n "$event_epoch" ] && [ "$event_epoch" -le "$SNAPSHOT_EPOCH" ]; then
+          event_age=$((SNAPSHOT_EPOCH - event_epoch))
+        fi
+      else
+        event_epoch=''
+      fi
+    fi
 
     # Durable keyed open-decision set: fold the WHOLE status stream
     # (fm-classify-lib.sh's status_open_decisions) so a later unrelated event can
@@ -813,19 +1073,14 @@ task_json_lines() {
     # never clear another concern's keyed decision. A parked/blocked state, or a
     # non-authoritative status-log/none read on a still-live task, keeps the fold's
     # open decision surfacing.
-    open_decisions_tsv=$(status_open_decisions "$status_log" "$kind")
+    open_decisions_file=$tasks_dir/$id.open.tsv
+    status_open_decisions "$status_log" "$kind" >"$open_decisions_file"
     if [ "$kind" != secondmate ] && \
        { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
            && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
          || { [ "$current_state" = "done" ] || [ "$current_state" = "failed" ]; }; }; then
-      open_decisions_tsv=""
+      : >"$open_decisions_file"
     fi
-    open_decisions_json=$(printf '%s' "$open_decisions_tsv" | jq -R -s '
-      [ splits("\n") | select(length > 0)
-        | (capture("^(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
-        | select(. != null) ]')
-    pending_decision=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "needs-decision") then 1 else 0 end')
-    blocked_event=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "blocked") then 1 else 0 end')
 
     endpoint_exists=null
     agent_alive=not_checked
@@ -840,19 +1095,29 @@ task_json_lines() {
       snapshot_task_cleanup
       return 1
     }
-    [ -f "$report_path" ] && report_present=1 || report_present=0
-    meta_json=$(path_present_json "$original_meta" "$meta")
-    status_json=$event_json
-    report_json=$(path_present_json "$DATA/$id/report.md" "$report_path")
-    if [ -n "$worktree" ]; then worktree_json=$(path_present_json "$worktree"); else worktree_json=$(jq -n '{path:null,present:false}'); fi
-    if [ -n "$home" ] && [ -n "$remote_host" ]; then
-      home_json=$(jq -n --arg path "$home" '{path:$path,present:null}')
-    elif [ -n "$home" ]; then
-      home_json=$(path_present_json "$home")
+    if [ -f "$report_path" ]; then report_present=true; else report_present=false; fi
+
+    path_present_args meta_path meta_present "$original_meta" "$meta"
+    report_contract=$DATA/$id/report.md
+    path_present_args report_contract report_present_json "$report_contract" "$report_path"
+    if [ -n "$worktree" ]; then
+      path_present_args worktree_path_arg worktree_present "$worktree"
     else
-      home_json=$(jq -n '{path:null,present:false}')
+      worktree_path_arg=; worktree_present=false
+    fi
+    if [ -n "$home" ] && [ -n "$remote_host" ]; then
+      home_path_arg=$home
+      home_present=null
+    elif [ -n "$home" ]; then
+      path_present_args home_path_arg home_present "$home"
+    else
+      home_path_arg=; home_present=false
     fi
 
+    task_out_file=$tasks_dir/$id.task.json
+    # One jq per task. Large payloads ride --slurpfile/--rawfile so Windows
+    # CreateProcess never sees them on argv (ARG_MAX on contribution-input and
+    # per-task current_state JSON).
     jq -n \
       --arg id "$id" \
       --arg kind "$kind" \
@@ -861,8 +1126,6 @@ task_json_lines() {
       --arg yolo "$yolo" \
       --arg branch "$branch" \
       --arg project "$project" \
-      --arg worktree "$worktree" \
-      --arg home "$home" \
       --arg projects "$projects" \
       --arg spawn_gen "$spawn_gen" \
       --arg backend "$backend" \
@@ -871,22 +1134,43 @@ task_json_lines() {
       --arg remote_root "$remote_root" \
       --arg pr "$pr" \
       --arg pr_source "$pr_source" \
-      --arg pr_head "$(meta_value "$meta" pr_head)" \
+      --arg pr_head "$pr_head" \
       --arg agent_alive "$agent_alive" \
       --arg observed_at "$SNAPSHOT_NOW" \
-      --arg last_event_raw "$last_event_raw" \
-      --argjson current_state "$current_json" \
-      --argjson meta_path "$meta_json" \
-      --argjson status_log "$status_json" \
-      --argjson report "$report_json" \
-      --argjson worktree_path "$worktree_json" \
-      --argjson home_path "$home_json" \
+      --rawfile open_tsv "$open_decisions_file" \
+      --arg meta_path "$meta_path" \
+      --argjson meta_present "$meta_present" \
+      --arg report_path "$report_contract" \
+      --argjson report_path_present "$report_present_json" \
+      --arg worktree_path "$worktree_path_arg" \
+      --argjson worktree_present "$worktree_present" \
+      --arg home_path "$home_path_arg" \
+      --argjson home_present "$home_present" \
+      --slurpfile current_state "$current_file" \
+      --arg event_path "$event_path" \
+      --argjson event_present "$event_present" \
+      --arg event_raw "$event_raw" \
+      --arg event_verb "$event_verb" \
+      --arg event_note "$event_note" \
+      --argjson event_age "$event_age" \
       --argjson endpoint_exists "$endpoint_exists" \
-      --argjson open_decisions "$open_decisions_json" \
-      --argjson pending_decision "$(bool_json "$pending_decision")" \
-      --argjson blocked_event "$(bool_json "$blocked_event")" \
-      --argjson report_present "$(bool_json "$report_present")" \
-      '{
+      --argjson report_present "$report_present" \
+      '
+      ($open_tsv
+        | [ splits("\n") | select(length > 0)
+            | (capture("^(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
+            | select(. != null) ]) as $open_decisions
+      | ($open_decisions | any(.[]; .verb == "needs-decision")) as $pending_decision
+      | ($open_decisions | any(.[]; .verb == "blocked")) as $blocked_event
+      | (if $worktree_path == "" then {path:null,present:false}
+         else {path:$worktree_path,present:$worktree_present} end) as $worktree_obj
+      | (if $home_path == "" then {path:null,present:false}
+         elif $home_present == null then {path:$home_path,present:null}
+         else {path:$home_path,present:$home_present} end) as $home_obj
+      | ({path:$event_path,present:$event_present,kind:"event_history",
+          last_event:{state:$event_verb,note:$event_note,raw:$event_raw,age_seconds:$event_age}}) as $status_log
+      | ($status_log.last_event.raw // "") as $last_event_raw
+      | {
         id:$id,
         kind:$kind,
         harness:($harness // ""),
@@ -898,14 +1182,14 @@ task_json_lines() {
         backend:$backend,
         remote:(if $remote_host == "" then null else {host:$remote_host,root:$remote_root} end),
         paths:{
-          meta:$meta_path,
+          meta:{path:$meta_path,present:$meta_present},
           status_log:$status_log,
-          worktree:$worktree_path,
-          home:$home_path,
-          report:$report
+          worktree:$worktree_obj,
+          home:$home_obj,
+          report:{path:$report_path,present:$report_path_present}
         },
         secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
-        current_state:($current_state + {observed_at:$observed_at,freshness:"fresh"}),
+        current_state:($current_state[0] + {observed_at:$observed_at,freshness:"fresh"}),
         endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive,
           status:(if $endpoint_exists == false then "absent"
                   elif $agent_alive == "alive" or $agent_alive == "dead" then $agent_alive
@@ -929,8 +1213,19 @@ task_json_lines() {
              steer:"bin/fm-send.sh fm-\($id) \u0027<instruction>\u0027",
              return_channel_note:null}
           end)
-      }'
-  done | jq -s 'sort_by(.id)'
+      }' >"$task_out_file" || {
+      snapshot_task_cleanup
+      return 1
+    }
+    fm_phase "task_json_end_$id"
+  done
+
+  # One sort pass over the composed task objects.
+  if [ "$SNAPSHOT_TASK_META_COUNT" -eq 0 ]; then
+    jq -n '[]'
+  else
+    jq -s 'sort_by(.id)' "$tasks_dir"/*.task.json
+  fi
 }
 
 # Main-home current-inventory validity: same orphan / unstructured-current checks
@@ -1959,44 +2254,129 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json-file> <outpu
 }
 
 scout_report_lines() {
-  local report id
+  # One find + one jq over ids (ids never contain U+001F). Avoids one jq spawn
+  # per report on native Windows.
+  # Build path in jq from --arg data "$DATA": on MSYS, a native jq.exe rewrites
+  # POSIX argv paths (/c/Users/...) to Windows form (C:/Users/...), which is
+  # what the old per-report `jq --arg path "$report"` produced. Paths fed only
+  # through a file skip that converter and would disagree with fm_home/roots
+  # and with tests that pass $home via --arg.
+  local report id table
   if [ ! -d "$DATA" ]; then
     jq -n '[]'
     return 0
   fi
+  table=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-fleet-scouts.XXXXXX") || return 1
   LC_ALL=C find "$DATA" -mindepth 2 -maxdepth 2 -type f -name report.md -print \
     | sort \
     | while IFS= read -r report; do
-      id=$(basename "$(dirname "$report")")
-      jq -n --arg id "$id" --arg path "$report" '{id:$id,path:$path}'
-    done \
-    | jq -s 'sort_by(.id)'
+      id=${report%/*}
+      id=${id##*/}
+      printf '%s\n' "$id"
+    done >"$table" || { rm -f -- "$table"; return 1; }
+  if [ ! -s "$table" ]; then
+    rm -f -- "$table"
+    jq -n '[]'
+    return 0
+  fi
+  jq -R -s --arg data "$DATA" '
+    split("\n")
+    | map(select(length > 0)
+        | {id:., path:($data + "/" + . + "/report.md")})
+    | sort_by(.id)
+  ' "$table" || { rm -f -- "$table"; return 1; }
+  rm -f -- "$table"
 }
 
+fm_phase start_backlog
 BACKLOG_JSON=$(backlog_json) || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
+fm_phase end_backlog
 contribution_tasks_json() {
-  local meta id merge_authority
+  # One meta pass per task into a unit-separated table, then one jq over the
+  # whole table. Avoids N jq spawns and keeps large task arrays off argv
+  # (Windows CreateProcess ARG_MAX). Field values here (ids, kinds, PR URLs,
+  # merge authority) never contain U+001F.
+  # Merge authority is a home-level AFK-posture answer (meta/id are only
+  # presence checks), so resolve it once for the snapshot rather than once
+  # per task.
+  local meta id merge_authority kind url head contrib_dir out table us=$'\x1f'
+  local home_merge_authority=unknown first_meta='' first_id=''
+  contrib_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-fleet-contrib.XXXXXX") \
+    || return 1
+  table=$contrib_dir/tasks.table
+  : >"$table" || { rm -rf -- "$contrib_dir"; return 1; }
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] && [ ! -L "$meta" ] || continue
-    id=$(basename "$meta" .meta)
-    merge_authority=unknown
-    if fm_merge_authority_resolve "$FM_HOME" "$STATE" "$meta" "$id"; then
-      merge_authority=$FM_MERGE_AUTHORITY
-    fi
-    jq -n --arg id "$id" --arg kind "$(meta_value "$meta" kind)" \
-      --arg url "$(meta_value "$meta" pr)" --arg head "$(meta_value "$meta" pr_head)" \
-      --arg merge_authority "$merge_authority" '{id:$id,kind:$kind,pr:{url:$url,head:$head},merge_authority:$merge_authority}'
-  done | jq -s .
+    first_meta=$meta
+    first_id=${meta##*/}
+    first_id=${first_id%.meta}
+    break
+  done
+  if [ -n "$first_meta" ] \
+    && fm_merge_authority_resolve "$FM_HOME" "$STATE" "$first_meta" "$first_id"; then
+    home_merge_authority=$FM_MERGE_AUTHORITY
+  fi
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    id=${meta##*/}
+    id=${id%.meta}
+    merge_authority=$home_merge_authority
+    kind=; url=; head=
+    while IFS= read -r out || [ -n "$out" ]; do
+      case "$out" in
+        kind=*) kind=${out#*=} ;;
+        pr=*) url=${out#*=} ;;
+        pr_head=*) head=${out#*=} ;;
+      esac
+    done < "$meta"
+    printf '%s%s%s%s%s%s%s%s%s\n' \
+      "$id" "$us" "$kind" "$us" "$url" "$us" "$head" "$us" "$merge_authority" \
+      >>"$table" || {
+      rm -rf -- "$contrib_dir"
+      return 1
+    }
+  done
+  if [ ! -s "$table" ]; then
+    rm -rf -- "$contrib_dir"
+    jq -n '[]'
+    return 0
+  fi
+  jq -R -s '
+    split("\n")
+    | map(select(length > 0)
+        | split("\u001f")
+        | {id:.[0], kind:.[1], pr:{url:(.[2] // ""), head:(.[3] // "")},
+           merge_authority:(.[4] // "")})
+  ' "$table" || {
+    rm -rf -- "$contrib_dir"
+    return 1
+  }
+  rm -rf -- "$contrib_dir"
 }
 
 if [ "$OUTPUT_MODE" = contribution-input ]; then
   # Reuse the canonical backlog parser, without observing workers or other homes.
-  contribution_tasks=$(contribution_tasks_json) || { echo "fm-fleet-snapshot: contribution task read failed" >&2; exit 1; }
-  jq -n --argjson backlog "$BACKLOG_JSON" --argjson tasks "$contribution_tasks" '{backlog:$backlog,tasks:$tasks}'
+  # Stage through files: --argjson with the live backlog on argv tips Windows
+  # CreateProcess ARG_MAX once the backlog filter grows.
+  contrib_transport=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-fleet-ci.XXXXXX") \
+    || { echo "fm-fleet-snapshot: contribution transport failed" >&2; exit 1; }
+  printf '%s\n' "$BACKLOG_JSON" > "$contrib_transport/backlog.json" \
+    || { rm -rf -- "$contrib_transport"; echo "fm-fleet-snapshot: backlog staging failed" >&2; exit 1; }
+  contribution_tasks_json > "$contrib_transport/tasks.json" \
+    || { rm -rf -- "$contrib_transport"; echo "fm-fleet-snapshot: contribution task read failed" >&2; exit 1; }
+  jq -n --slurpfile backlog "$contrib_transport/backlog.json" \
+    --slurpfile tasks "$contrib_transport/tasks.json" \
+    '{backlog:$backlog[0],tasks:$tasks[0]}' \
+    || { rm -rf -- "$contrib_transport"; echo "fm-fleet-snapshot: contribution-input compose failed" >&2; exit 1; }
+  rm -rf -- "$contrib_transport"
   exit 0
 fi
+fm_phase start_prefetch
 prefetch_task_current_states || { echo "fm-fleet-snapshot: task observation failed" >&2; exit 1; }
+fm_phase end_prefetch
+fm_phase start_task_json
 TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }
+fm_phase end_task_json
 
 JSON_TRANSPORT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot.XXXXXX") \
   || { echo "fm-fleet-snapshot: temporary transport directory creation failed" >&2; exit 1; }
@@ -2012,15 +2392,19 @@ printf '%s\n' "$TASKS_JSON" > "$TASKS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: temporary task file write failed" >&2; exit 1; }
 
 CONTRIBUTIONS_JSON_FILE="$JSON_TRANSPORT_DIR/contributions.json"
+fm_phase start_contrib_tasks
 CONTRIBUTION_TASKS_JSON=$(contribution_tasks_json) \
   || { echo "fm-fleet-snapshot: contribution task read failed" >&2; exit 1; }
+fm_phase end_contrib_tasks
 printf '%s\n' "$CONTRIBUTION_TASKS_JSON" > "$JSON_TRANSPORT_DIR/contribution-tasks.json" \
   || { echo "fm-fleet-snapshot: contribution task staging failed" >&2; exit 1; }
 jq -n --slurpfile backlog "$BACKLOG_JSON_FILE" --slurpfile tasks "$JSON_TRANSPORT_DIR/contribution-tasks.json" \
   '{backlog:$backlog[0],tasks:$tasks[0]}' > "$JSON_TRANSPORT_DIR/contribution-input.json"
+fm_phase start_contributions_sh
 FM_CONTRIBUTIONS_NOW="$SNAPSHOT_NOW" "$SCRIPT_DIR/fm-contributions.sh" snapshot \
   "$JSON_TRANSPORT_DIR/contribution-input.json" > "$CONTRIBUTIONS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: contribution coverage unavailable" >&2; exit 1; }
+fm_phase end_contributions_sh
 
 if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
   secondmate_home_summary_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" \
@@ -2028,15 +2412,24 @@ if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
   exit 0
 fi
 
+fm_phase start_scout
 scout_report_lines > "$SCOUT_REPORTS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: scout report snapshot failed" >&2; exit 1; }
+fm_phase end_scout
+fm_phase start_main_inventory
 main_inventory_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" > "$MAIN_INVENTORY_JSON_FILE" \
   || { echo "fm-fleet-snapshot: main inventory summary failed" >&2; exit 1; }
+fm_phase end_main_inventory
+fm_phase start_secondmate_current
 secondmate_current_json "$TASKS_JSON_FILE" "$SECONDMATE_CURRENT_JSON_FILE" \
   || { echo "fm-fleet-snapshot: registered secondmate aggregation failed" >&2; exit 1; }
+fm_phase end_secondmate_current
+fm_phase start_secondmate_landed
 secondmate_landed_from_current_json "$SECONDMATE_CURRENT_JSON_FILE" "$SECONDMATE_LANDED_JSON_FILE" \
   || { echo "fm-fleet-snapshot: secondmate landed projection failed" >&2; exit 1; }
+fm_phase end_secondmate_landed
 
+fm_phase start_final_jq
 jq -n \
   --arg generated "$SNAPSHOT_NOW" \
   --arg fm_home "$FM_HOME" \
@@ -2077,3 +2470,4 @@ jq -n \
        note:"For kind=secondmate, bearings selects validated structured state from that registered home; parent events and bounded terminal evidence are fallback-only supplements and never current-state authority."
      }
    }'
+fm_phase end_final_jq
