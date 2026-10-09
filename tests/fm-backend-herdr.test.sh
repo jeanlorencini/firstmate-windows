@@ -2002,6 +2002,48 @@ test_projection_journal_v2_binds_and_advances_exact_endpoint() {
   pass "herdr presentation journal: version 2 binds exact home/endpoint/parent identities and advances atomically"
 }
 
+test_projection_journal_reader_keeps_equals_and_rejects_gaps() {
+  local dir state journal out
+  dir="$TMP_ROOT/projection-journal-equals"; state="$dir/state"; mkdir -p "$state"
+  journal="$state/task-eq.herdr-presentation"
+  printf 'version=1\ntask_id=task-eq\nprojection_id=EEEEEEEEEEEEEEEEEEEEEE\n' > "$journal"
+  out=$(bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_snapshot "$1" task-eq || exit 1
+    printf "%s" "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID"
+  ' "$ROOT" "$journal") || fail "version 1 journal with ordinary values must snapshot"
+  [ "$out" = EEEEEEEEEEEEEEEEEEEEEE ] || fail "version 1 projection id mismatch: $out"
+  printf 'version=1\ntask_id=task-eq\nprojection_id=EEEEEEEEEEEEEEEEEEEEEE\nextra=1\n' > "$journal"
+  if bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_journal_snapshot "$1" task-eq' \
+    "$ROOT" "$journal"; then
+    fail "version 1 journal with an extra line must reject"
+  fi
+  {
+    printf 'version=2\n'
+    printf 'task_id=task-eq\n'
+    printf 'projection_id=EEEEEEEEEEEEEEEEEEEEEE\n'
+    printf 'home=/tmp/eq-home\n'
+    printf 'session=lab\n'
+    printf 'workspace_id=w2\n'
+    printf 'tab_id=w2:t2\n'
+    printf 'pane_id=w2:p2\n'
+    printf 'parent_workspace_id=w1\n'
+    printf 'parent_label=x=y=z\n'
+    printf 'workspace_label=%s\n' "$(bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_workspace_label task-eq EEEEEEEEEEEEEEEEEEEEEE
+    ' "$ROOT")"
+    printf 'task_label=fm-task-eq\n'
+  } > "$journal"
+  out=$(bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_snapshot "$1" task-eq || exit 1
+    fm_backend_herdr_projection_journal_field "$1" parent_label
+  ' "$ROOT" "$journal") || fail "parent_label containing = must snapshot"
+  [ "$out" = "x=y=z" ] || fail "field/snapshot must keep bytes after the first =: $out"
+  pass "herdr presentation journal: reader keeps = in values and rejects version 1 line-count gaps"
+}
+
 test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane() {
   local dir state log resp fb out token journal
   dir="$TMP_ROOT/projection-create"; state="$dir/state"; mkdir -p "$dir/responses" "$state"
@@ -6036,6 +6078,7 @@ test_release_floor_verdict_survives_losing_either_signal
 test_presentation_preference_reports_three_distinct_states
 test_projection_journal_is_atomic_and_uses_128_bit_token
 test_projection_journal_v2_binds_and_advances_exact_endpoint
+test_projection_journal_reader_keeps_equals_and_rejects_gaps
 test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane
 test_projection_create_never_closes_a_concurrent_same_label_tab
 test_projection_create_reads_each_response_shape_exactly
