@@ -148,12 +148,24 @@ usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//';
 
 apply_session_host() {  # <artifact>
   local endpoint
-  endpoint=$(perl -MJSON::PP -MCwd=realpath -MEncode=decode,FB_CROAK -e '
+  endpoint=$(perl -MJSON::PP -MCwd=realpath -MEncode=decode,encode,FB_CROAK -e '
     use strict;
     use warnings;
     my ($path, $artifact) = @ARGV;
     my $real = realpath($artifact) // die "cannot resolve board artifact\n";
     $real = decode("UTF-8", $real, FB_CROAK);
+    # Lavish on Windows saves the drive spelling, C:\Users\..., while MSYS and
+    # Cygwin perl resolve /c/Users/..., and the filesystem ignores case, so
+    # there both sides compare as lowercase drive spellings.
+    my $canon = sub { $_[0] };
+    $canon = sub {
+      my $p = shift;
+      $p = decode("UTF-8", Cygwin::posix_to_win_path(encode("UTF-8", $p)), FB_CROAK)
+        if $p =~ m{\A/};
+      $p =~ tr{/}{\\};
+      lc $p;
+    } if $^O eq "msys" || $^O eq "cygwin";
+    $real = $canon->($real);
     open my $file, "<", $path or die "cannot read Lavish session store\n";
     -f $file or die "Lavish session store is not a regular file\n";
     local $/;
@@ -162,7 +174,7 @@ apply_session_host() {  # <artifact>
     ref($state) eq "HASH" && ref($state->{sessions}) eq "HASH"
       or die "invalid Lavish session store\n";
     my @sessions = grep {
-      ref($_) eq "HASH" && defined($_->{file}) && $_->{file} eq $real
+      ref($_) eq "HASH" && defined($_->{file}) && $canon->($_->{file}) eq $real
     } values %{$state->{sessions}};
     @sessions == 1 or die "board must have one saved Lavish session\n";
     my $url = $sessions[0]->{url} // "";
