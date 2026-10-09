@@ -489,6 +489,105 @@ EOF
   pass "fm-merge-local: a registry change cannot redirect an in-flight local-only task"
 }
 
+# A ship branch that carries commits already on a remote-tracking tip (and not
+# on local DEFAULT) must be refused before the fast-forward, so rebasing onto
+# origin/<default> cannot land upstream commits into the local default branch.
+test_local_merge_refuses_upstream_commits_not_in_local_default() {
+  local home proj id main remote bare out status before upstream_sha short
+  home="$TMP_ROOT/local-merge-upstream-refuse/home"
+  proj="$TMP_ROOT/local-merge-upstream-refuse/proj"
+  bare="$TMP_ROOT/local-merge-upstream-refuse/bare.git"
+  remote="$TMP_ROOT/local-merge-upstream-refuse/remote-clone"
+  id=local-merge-upstream-refuse-e1
+  mkdir -p "$home/state" "$home/data" "$proj"
+  git -C "$proj" init -q || fail "could not initialize upstream-refuse fixture"
+  git -C "$proj" config user.email test@example.com
+  git -C "$proj" config user.name test
+  printf 'base\n' > "$proj/base"
+  git -C "$proj" add base || fail "could not stage upstream-refuse base"
+  git -C "$proj" commit -qm base || fail "could not commit upstream-refuse base"
+  main=$(git -C "$proj" branch --show-current)
+  git -C "$proj" clone -q --bare "$proj" "$bare" \
+    || fail "could not create bare remote for upstream-refuse"
+  git -C "$proj" remote add origin "$bare" \
+    || fail "could not add origin for upstream-refuse"
+  git -C "$proj" fetch -q origin \
+    || fail "could not fetch origin for upstream-refuse"
+  git -C "$proj" clone -q "$bare" "$remote" \
+    || fail "could not clone remote side for upstream-refuse"
+  git -C "$remote" config user.email test@example.com
+  git -C "$remote" config user.name test
+  printf 'upstream\n' > "$remote/upstream"
+  git -C "$remote" add upstream || fail "could not stage upstream commit"
+  git -C "$remote" commit -qm 'upstream only' || fail "could not commit upstream only"
+  git -C "$remote" push -q origin "HEAD:refs/heads/$main" \
+    || fail "could not publish upstream commit to origin"
+  git -C "$proj" fetch -q origin \
+    || fail "could not refresh origin after upstream publish"
+  upstream_sha=$(git -C "$proj" rev-parse "origin/$main")
+  short=$(git -C "$proj" rev-parse --short "$upstream_sha")
+  # Ship branch rebased onto the remote tip (the failure mode under test), then
+  # a task commit on top, while local $main stays at the pre-upstream base.
+  git -C "$proj" checkout -qb "fm/$id" "origin/$main" \
+    || fail "could not create ship branch from origin tip"
+  printf 'task\n' > "$proj/task"
+  git -C "$proj" add task || fail "could not stage task commit"
+  git -C "$proj" commit -qm 'task only' || fail "could not commit task only"
+  git -C "$proj" checkout -q "$main" || fail "could not restore local default"
+  before=$(git -C "$proj" rev-parse HEAD)
+  printf 'project=%s\nmode=local-only\nbranch=fm/%s\n' "$proj" "$id" > "$home/state/$id.meta"
+  status=0
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "local merge landed a branch that carried an upstream commit: $out"
+  assert_contains "$out" "already exist on a remote-tracking branch" \
+    "upstream refusal did not name the remote-tracking cause"
+  assert_contains "$out" "$short" \
+    "upstream refusal did not list the offending commit short sha"
+  assert_contains "$out" "Rebase only the task's commits onto local $main" \
+    "upstream refusal did not instruct a local-default-only rebase"
+  [ "$(git -C "$proj" rev-parse HEAD)" = "$before" ] \
+    || fail "refused upstream merge still moved the local default branch"
+  pass "fm-merge-local: a branch that brings remote-only commits is refused with those commits listed"
+}
+
+# A ship branch whose only new commit is the task's own work still lands when a
+# remote tip exists, as long as none of the landed commits are remote-only.
+test_local_merge_lands_task_only_commits() {
+  local home proj id main bare out tip
+  home="$TMP_ROOT/local-merge-task-only/home"
+  proj="$TMP_ROOT/local-merge-task-only/proj"
+  bare="$TMP_ROOT/local-merge-task-only/bare.git"
+  id=local-merge-task-only-e2
+  mkdir -p "$home/state" "$home/data" "$proj"
+  git -C "$proj" init -q || fail "could not initialize task-only fixture"
+  git -C "$proj" config user.email test@example.com
+  git -C "$proj" config user.name test
+  printf 'base\n' > "$proj/base"
+  git -C "$proj" add base || fail "could not stage task-only base"
+  git -C "$proj" commit -qm base || fail "could not commit task-only base"
+  main=$(git -C "$proj" branch --show-current)
+  git -C "$proj" clone -q --bare "$proj" "$bare" \
+    || fail "could not create bare remote for task-only"
+  git -C "$proj" remote add origin "$bare" \
+    || fail "could not add origin for task-only"
+  git -C "$proj" fetch -q origin \
+    || fail "could not fetch origin for task-only"
+  git -C "$proj" checkout -qb "fm/$id" || fail "could not create task-only ship branch"
+  printf 'task\n' > "$proj/task"
+  git -C "$proj" add task || fail "could not stage task-only commit"
+  git -C "$proj" commit -qm 'task only' || fail "could not commit task-only change"
+  tip=$(git -C "$proj" rev-parse HEAD)
+  git -C "$proj" checkout -q "$main" || fail "could not restore task-only default"
+  printf 'project=%s\nmode=local-only\nbranch=fm/%s\n' "$proj" "$id" > "$home/state/$id.meta"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id") \
+    || fail "local merge refused a task-only branch: $out"
+  [ "$(git -C "$proj" rev-parse HEAD)" = "$tip" ] \
+    || fail "task-only local merge did not fast-forward to the ship tip"
+  assert_contains "$out" "merged fm/$id into local $main" \
+    "task-only local merge did not report the landed branch"
+  pass "fm-merge-local: a branch with only the task's commit lands"
+}
+
 # A registered name may contain spaces, and the lookup must match the whole
 # name rather than only its first whitespace-delimited token (issue #1977).
 # The longer "foo bar" row is listed before the "foo" row so a leading-prefix
@@ -1453,6 +1552,38 @@ EOF
   pass "fm-spawn: a registry forge token the parser refuses stops the launch, reason included"
 }
 
+# A worker whose git resolves no commit identity fails its first commit, and the
+# only way past that is an identity nobody chose for it. The spawn refuses before
+# any endpoint exists, naming the remedy only the captain can apply.
+# The case drops the fixture identity, and user.useConfigOnly stops git guessing
+# one from the host name, so the refusal does not depend on this host.
+test_spawn_refuses_a_project_without_a_git_identity() {
+  local rec home proj fakebin out status
+  rec=$(make_home identity)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  git -C "$proj" config user.useConfigOnly true || fail "could not configure the identity fixture"
+  write_brief "$home" identity-none-a1 direct-PR
+  out=$(unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL
+    export GIT_CONFIG_GLOBAL=/dev/null
+    run_spawn "$home" "$fakebin" identity-none-a1 "$proj" claude --mode direct-PR --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a spawn launched a worker whose git has no commit identity"
+  assert_contains "$out" "identity-none-a1 cannot launch: git in $proj resolves no commit identity" \
+    "the spawn did not refuse a project without a git identity"
+  assert_contains "$out" 'git config --global user.email' "the refusal did not name the captain's remedy"
+  assert_absent "$home/state/identity-none-a1.meta" "the refused spawn still recorded a task"
+
+  git -C "$proj" config user.name 'Identity Fixture'
+  git -C "$proj" config user.email identity@example.invalid
+  write_brief "$home" identity-set-a2 direct-PR
+  out=$(unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL
+    run_spawn "$home" "$fakebin" identity-set-a2 "$proj" claude --mode direct-PR --yolo off)
+  assert_not_contains "$out" "resolves no commit identity" "a configured identity was refused"
+  pass "fm-spawn: a ship spawn refuses a project whose git resolves no commit identity"
+}
+
 # Promotion renders the same single owner an ordinary brief does, so a promoted
 # worker on a bound forge must receive that forge's contract rather than the PR
 # one. Promotion decides the mode and yolo itself, but the forge is the project's
@@ -1623,6 +1754,8 @@ test_promotion_delivers_the_real_definition_of_done
 test_promotion_persists_the_selected_ship_branch
 test_promotion_branch_command_is_shell_safe
 test_local_merge_uses_the_recorded_ship_branch
+test_local_merge_refuses_upstream_commits_not_in_local_default
+test_local_merge_lands_task_only_commits
 test_project_mode_matches_whole_multiword_names
 test_project_mode_maps_the_conditional_policy
 test_project_mode_binds_the_forge_orthogonally
@@ -1634,6 +1767,7 @@ test_spawn_requires_the_brief_to_carry_the_registered_forge
 test_spawn_requires_the_brief_to_carry_the_selected_branch
 test_spawn_notices_a_ship_branch_against_the_registry_prefix
 test_spawn_refuses_a_registry_forge_it_cannot_read
+test_spawn_refuses_a_project_without_a_git_identity
 test_promotion_carries_the_forge_binding
 test_spawn_and_promote_require_filled_task_subsections
 test_project_mode_resolves_branch_prefix

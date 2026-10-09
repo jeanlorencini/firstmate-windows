@@ -120,6 +120,35 @@ if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BRANCH"; then
   exit 1
 fi
 
+# Refuse commits that already exist on a remote-tracking branch and are absent
+# from the local default branch. A worker who rebased onto origin/<default>
+# (or any other remote tip) instead of local DEFAULT would otherwise
+# fast-forward those upstream commits into the local default.
+ship_commits=$(git -C "$PROJ" rev-list --reverse "$DEFAULT..$BRANCH" 2>/dev/null || true)
+if [ -n "$ship_commits" ]; then
+  remote_tips=$(git -C "$PROJ" for-each-ref --format='%(objectname)' refs/remotes 2>/dev/null || true)
+  if [ -n "$remote_tips" ]; then
+    # One walk of remote tips excluding local DEFAULT; intersect with the ship
+    # range in-process (no per-commit git forks).
+    # shellcheck disable=SC2086 # tip SHAs are whitespace-safe object names
+    remote_only=$(git -C "$PROJ" rev-list $remote_tips --not "$DEFAULT" 2>/dev/null || true)
+    if [ -n "$remote_only" ]; then
+      offenders=$(
+        printf '%s\n' "$remote_only" | awk 'NR==FNR { r[$0]=1; next } r[$0]' - <(printf '%s\n' "$ship_commits")
+      )
+      if [ -n "$offenders" ]; then
+        echo "REFUSED: $BRANCH brings commit(s) that already exist on a remote-tracking branch and are not in local $DEFAULT:" >&2
+        while IFS= read -r sha; do
+          [ -n "$sha" ] || continue
+          git -C "$PROJ" show -s --format='%h %an %s' "$sha" >&2
+        done <<< "$offenders"
+        echo "Rebase only the task's commits onto local $DEFAULT, then retry." >&2
+        exit 1
+      fi
+    fi
+  fi
+fi
+
 before=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 hold_status=0
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
