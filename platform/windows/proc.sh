@@ -197,8 +197,12 @@ fm_win_ps() {
   if [ "${#fields[@]}" -eq 0 ]; then
     fm_win_msys_proc "$pid" || fm_win32_alive "$pid" || return 1
     fields=(pid comm)
-  else
+  elif [[ " ${fields[*]} " == *" ppid "* ]]; then
     fm_win_proc "$pid" || return 1
+  else
+    # Only ppid needs the Win32 parent walk, which costs a pwsh start in a
+    # detached process whose MSYS parent has exited.
+    fm_win_msys_proc "$pid" || fm_win_proc "$pid" w32 || return 1
   fi
   _fm_win_ps_row "$pid"
 }
