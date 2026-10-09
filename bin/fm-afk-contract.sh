@@ -289,9 +289,18 @@ fm_afk_contract_write_atomic() {  # <path> (content on stdin)
 # --- record reading (the only parser) --------------------------------------
 
 fm_afk_contract_read_field() {  # <path> <name>
-  local path=$1 name=$2
+  # Fork-free: sed|head was two MSYS spawns per field, and validate reads about
+  # a dozen fields - seconds on native Windows when merge authority resolved
+  # the contract once per fleet-snapshot task.
+  local path=$1 name=$2 line prefix
   [ -f "$path" ] || return 1
-  sed -n "s/^${name}: //p" "$path" | head -1
+  prefix="${name}: "
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$prefix"*) printf '%s\n' "${line#"$prefix"}"; return 0 ;;
+    esac
+  done <"$path"
+  return 0
 }
 
 # The words block runs from its header to the end of a version 2 record, and in a
@@ -362,7 +371,14 @@ fm_afk_contract_validate() {  # <path>
     ''|quiet) ;;
     *) fm_afk_contract_log "record $path has an invalid mode"; return 1 ;;
   esac
-  words_header=$(sed -n '/^words: /{p;q;}' "$path")
+  words_header=
+  while IFS= read -r words_header || [ -n "$words_header" ]; do
+    case "$words_header" in
+      'words: -'|'words: |'|'words: |-') break ;;
+      words:\ *) words_header=; break ;;
+    esac
+    words_header=
+  done <"$path"
   case "$words_header" in 'words: -'|'words: |'|'words: |-') ;; *) fm_afk_contract_log "record $path has no valid words field"; return 1 ;; esac
   fm_afk_contract_read_words "$path" >/dev/null || return 1
   confirmed=$(fm_afk_contract_read_field "$path" confirmed)

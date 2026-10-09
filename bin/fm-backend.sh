@@ -330,37 +330,67 @@ fm_backend_required_tool_available() {  # <backend> <tool>
   esac
 }
 
+# fm_meta_get_to: assign the LAST value of `key=` in <meta-file> to
+# <out-var>, or empty (never errors) if the file or key is absent. Fork-free;
+# preferred on hot Windows paths where `$(fm_meta_get ...)` would spawn.
+# Locals use an __fm_ prefix so printf -v never shadows a caller out-var named
+# value/meta/key/line under set -u.
+fm_meta_get_to() {  # <out-var> <meta-file> <key>
+  local __fm_meta_file=$2 __fm_meta_key=$3 __fm_meta_line __fm_meta_val=''
+  if [ -f "$__fm_meta_file" ]; then
+    while IFS= read -r __fm_meta_line || [ -n "$__fm_meta_line" ]; do
+      case "$__fm_meta_line" in
+        "$__fm_meta_key="*) __fm_meta_val=${__fm_meta_line#*=} ;;
+      esac
+    done < "$__fm_meta_file" 2>/dev/null || true
+  fi
+  printf -v "$1" '%s' "$__fm_meta_val"
+}
+
 # fm_meta_get: the LAST value of `key=` in <meta-file>, or empty (never
 # errors) if the file or key is absent. Mirrors the ad hoc `grep '^key=' |
 # tail -1 | cut -d= -f2-` snippet every fm-*.sh script used to repeat inline.
 fm_meta_get() {  # <meta-file> <key>
-  local meta=$1 key=$2 line value=''
-  [ -f "$meta" ] || return 0
-  while line=; IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      "$key="*) value=${line#*=} ;;
-    esac
-  done < "$meta" 2>/dev/null || true
+  local value
+  fm_meta_get_to value "$1" "$2"
   printf '%s' "$value"
+}
+
+# fm_backend_of_meta_to: backend recorded in <meta-file>, defaulting to
+# `tmux` when the field is absent - the P1 compatibility contract. Fork-free.
+fm_backend_of_meta_to() {  # <out-var> <meta-file>
+  local __fm_backend_val
+  fm_meta_get_to __fm_backend_val "$2" backend
+  printf -v "$1" '%s' "${__fm_backend_val:-tmux}"
 }
 
 # fm_backend_of_meta: the backend recorded in <meta-file>, defaulting to
 # `tmux` when the field is absent - the P1 compatibility contract.
 fm_backend_of_meta() {  # <meta-file>
   local v
-  v=$(fm_meta_get "$1" backend)
-  printf '%s' "${v:-tmux}"
+  fm_backend_of_meta_to v "$1"
+  printf '%s' "$v"
+}
+
+# fm_backend_target_of_meta_to: endpoint target from <meta-file>. Fork-free.
+fm_backend_target_of_meta_to() {  # <out-var> <meta-file>
+  local __fm_tgt_meta=$2 __fm_tgt_backend __fm_tgt_terminal __fm_tgt_window
+  fm_backend_of_meta_to __fm_tgt_backend "$__fm_tgt_meta"
+  if [ "$__fm_tgt_backend" = orca ]; then
+    fm_meta_get_to __fm_tgt_terminal "$__fm_tgt_meta" terminal
+    if [ -n "$__fm_tgt_terminal" ]; then
+      printf -v "$1" '%s' "$__fm_tgt_terminal"
+      return 0
+    fi
+  fi
+  fm_meta_get_to __fm_tgt_window "$__fm_tgt_meta" window
+  printf -v "$1" '%s' "$__fm_tgt_window"
 }
 
 fm_backend_target_of_meta() {  # <meta-file>
-  local meta=$1 backend terminal window
-  backend=$(fm_backend_of_meta "$meta")
-  if [ "$backend" = orca ]; then
-    terminal=$(fm_meta_get "$meta" terminal)
-    [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
-  fi
-  window=$(fm_meta_get "$meta" window)
-  [ -n "$window" ] && printf '%s' "$window"
+  local target
+  fm_backend_target_of_meta_to target "$1"
+  printf '%s' "$target"
 }
 
 # fm_backend_validate_task_endpoint: validate a task cleanup record entirely

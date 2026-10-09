@@ -61,8 +61,10 @@ fm_merge_authority_resolve() {  # <home> <state> <meta> <task-id>
     FM_MERGE_AUTHORITY_REASON='attended'
     return 0
   fi
-  if ! FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
-    "$_FM_MERGE_AUTHORITY_LIB_DIR/fm-afk-contract.sh" validate >/dev/null 2>&1; then
+  # Validate in-process: this library already sources fm-afk-contract.sh, so the
+  # function is loaded. Spawning the script again re-sources classify-lib and
+  # costs seconds per call on native Windows.
+  if ! fm_afk_contract_validate "$(fm_afk_contract_path "$state")" >/dev/null 2>&1; then
     FM_MERGE_AUTHORITY_REASON='record-unreadable'
     return 1
   fi
