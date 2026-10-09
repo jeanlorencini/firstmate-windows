@@ -21,8 +21,13 @@ _fm_win_jq_is_shim() {  # <path> -> 0 when path is this overlay's bash shim
   # current marker; "jq on Windows writes CRLF" is the historical header still
   # present on pre-marker home copies. Without the historical match, a mixed
   # PATH (new worktree + old home) mutual-execs until ARG_MAX.
+  # Real jq.exe is a megabyte binary: bail before any line scan unless the
+  # first two bytes are a shebang. That keeps the FM_WIN_JQ_BIN fast path
+  # from paying ~100ms per call when the candidate is already the binary.
   local f=$1 line n=0
   [ -f "$f" ] || return 1
+  IFS= read -r -n 2 line <"$f" || return 1
+  [ "$line" = "#!" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       *FM_WIN_JQ_SHIM*) return 0 ;;

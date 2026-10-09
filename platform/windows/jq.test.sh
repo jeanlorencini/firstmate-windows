@@ -141,4 +141,64 @@ out=$(PATH="$T/shim-a:$T/unmarked:$T/fake-real:$BASE_PATH" \
 expect "marked + unmarked pre-marker shim finish under the timeout" "rc=0" "$out"
 expect "marked skips unmarked and passes one -b" "args:-b -n 1" "$(cat "$FM_WIN_JQ_TEST_LOG" 2>/dev/null || echo missing)"
 
+# 7) Shebang gate: a binary (no #!) must not be treated as a shim.
+# The gate exists so FM_WIN_JQ_BIN pointing at real jq.exe never line-scans it.
+mkdir -p "$T/bin-like"
+printf 'MZ\0\0fake-pe' >"$T/bin-like/jq"
+chmod +x "$T/bin-like/jq"
+# shellcheck disable=SC1091
+unset FM_WIN_JQ_BIN FM_WIN_JQ_PATH
+PATH="$T/bin-like:$BASE_PATH" . "$ROOT/platform/windows/jq.sh" "$T/shim-a"
+case "${FM_WIN_JQ_BIN-}" in
+  "$T/bin-like/jq") ok "shebang gate accepts a non-script candidate as real jq" ;;
+  *) not_ok "shebang gate got FM_WIN_JQ_BIN=${FM_WIN_JQ_BIN-unset}, want $T/bin-like/jq" ;;
+esac
+
+# Count live shim processes by command-line substring (MSYS /proc when present).
+count_shim_procs() {
+  local n=0 f cmd
+  for f in /proc/[0-9]*/cmdline; do
+    [ -r "$f" ] || continue
+    cmd=$(tr '\0' ' ' <"$f" 2>/dev/null || true)
+    case "$cmd" in
+      *platform/windows/bin/jq*|*fm-win-jq*/jq*) n=$((n + 1)) ;;
+    esac
+  done
+  printf '%s' "$n"
+}
+
+# Scenario helper: PATH layout -> echo {} | jq -c . == {}, no process growth.
+# HOME_SHIM simulates the unmarked home copy; WT_SHIM is the current marked one.
+HOME_SHIM=$T/unmarked
+WT_SHIM=$T/shim-a
+run_scenario() {  # <label> <path-prefix>
+  local label=$1 path_prefix=$2 before after out rc
+  unset FM_WIN_JQ_BIN FM_WIN_JQ_PATH
+  before=$(count_shim_procs)
+  out=$(PATH="$path_prefix:$REAL_DIR:$BASE_PATH" \
+    run_bounded 20 bash -c 'printf "{}\n" | jq -c .' 2>"$T/err")
+  rc=$?
+  # Strip a trailing CR if a non-shim jq somehow ran without -b.
+  out=${out%$'\r'}
+  after=$(count_shim_procs)
+  expect "$label output is {}" "{}" "$out"
+  expect "$label exit 0" "0" "$rc"
+  if [ "$after" -le "$before" ]; then
+    ok "$label no shim process growth ($before -> $after)"
+  else
+    not_ok "$label shim process growth ($before -> $after)"
+  fi
+  [ ! -s "$T/err" ] && ok "$label no stderr" || not_ok "$label stderr: $(cat "$T/err")"
+}
+
+# (a) home-only unmarked shim on PATH
+run_scenario "home-only" "$HOME_SHIM"
+# (b) worktree-only marked shim on PATH
+run_scenario "worktree-only" "$WT_SHIM"
+# (c) both orders
+run_scenario "home-then-worktree" "$HOME_SHIM:$WT_SHIM"
+run_scenario "worktree-then-home" "$WT_SHIM:$HOME_SHIM"
+# (d) old unmarked + new marked (same as home-then-worktree; keep explicit label)
+run_scenario "unmarked-plus-new" "$HOME_SHIM:$WT_SHIM"
+
 [ "$fails" -eq 0 ]
