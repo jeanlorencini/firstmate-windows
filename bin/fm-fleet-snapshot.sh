@@ -472,10 +472,13 @@ meta_value() {  # <meta-file> <key>
 }
 
 # Fork-free last non-whitespace line (replaces grep|tail on the hot path).
+# Strip CR so CRLF status logs match the grep|tail text-mode result on Windows
+# (otherwise last_event note/raw/last_event_text keep a trailing \r).
 last_nonempty_line_to() {  # <out-var> <file>
   local line='' last=''
   [ -f "$2" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
     case "$line" in
       *[![:space:]]*) last=$line ;;
     esac
@@ -508,6 +511,9 @@ crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
       "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true
   )
   raw=$(printf '%s\n' "$raw" | head -1)
+  # Drop CR from Windows tool output so the state/source/detail split matches
+  # main (and so --arg does not re-emit \r into JSON string fields).
+  raw=${raw//$'\r'/}
   sep=' · '
   state=unknown
   source=none
@@ -835,20 +841,12 @@ prefetch_task_observations() {  # <meta> <id>
     fm_backend_of_meta_to backend "$meta"
     fm_backend_target_of_meta_to target "$meta"
     # Cheap exists for every local task; agent_alive only for secondmates
-    # (same split as before this spawn-cut work). Bound Herdr pane/agent
-    # probes: an unreadable herdr get was ~20s each on Windows and dominated
-    # snapshot wall. Timeout => exists false / agent_alive unknown, matching
-    # an unreadable probe. tmux and other backends stay on the unbound path
-    # so fixture and live non-herdr rows stay byte-identical.
+    # (same split as main). Bound only Herdr agent_alive: unreadable agent
+    # probes were ~20s each on Windows. Do not time-bound target_exists — a
+    # short budget flipped exists true→false on live herdr panes and broke
+    # Cockpit JSON equality with main.
     if [ -n "$target" ]; then
-      if [ "$backend" = herdr ]; then
-        if fm_snapshot_run_fn_timed "$FM_SNAPSHOT_ENDPOINT_TIMEOUT" \
-          fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
-          endpoint_exists=true
-        else
-          endpoint_exists=false
-        fi
-      elif fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
+      if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
         endpoint_exists=true
       else
         endpoint_exists=false
