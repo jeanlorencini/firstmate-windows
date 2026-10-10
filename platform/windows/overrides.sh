@@ -77,8 +77,25 @@ _fm_win_is_harness() {
   fm_harness_process_matches "$1" "$2"
 }
 
+# A harness with no MSYS pid can still anchor the lock by its Win32 pid when its
+# own readers use that pid too. Pi does: its extensions compare the lock with
+# node's process.pid. kill cannot see a Win32 pid, so liveness asks ps -W.
+_fm_win_native_anchor() { [ "$FM_PROC_COMM" = pi ]; }
+
 ps() { fm_win_ps "$@"; }
 _FM_WIN_PS_FN=1
+
+if declare -F fm_harness_pid_alive >/dev/null; then
+  fm_harness_pid_alive() {
+    local pid=$1
+    if kill -0 "$pid" 2>/dev/null && fm_win_msys_proc "$pid" \
+      && _fm_win_is_harness "$FM_PROC_COMM" "$FM_PROC_ARGS"; then
+      return 0
+    fi
+    fm_win32_alive "$pid" && fm_win_proc "$pid" w32 && _fm_win_native_anchor \
+      && _fm_win_is_harness "$FM_PROC_COMM" "$FM_PROC_ARGS"
+  }
+fi
 
 if declare -F fm_harness_ancestry_pids >/dev/null; then
   fm_harness_ancestry_pids() {
@@ -86,7 +103,7 @@ if declare -F fm_harness_ancestry_pids >/dev/null; then
     for ((hop = 0; hop < 16; hop++)); do
       fm_win_proc "$pid" "$space" || break
       if _fm_win_is_harness "$FM_PROC_COMM" "$FM_PROC_ARGS"; then
-        if [ "$space" = msys ]; then
+        if [ "$space" = msys ] || _fm_win_native_anchor; then
           printf '%s\n' "$pid"
           printed=1
         fi

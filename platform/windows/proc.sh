@@ -4,13 +4,17 @@
 # rest of the chain exists only as Win32 pids.
 #
 # A native process has no readable command line without a CIM query per
-# process, so its args are its executable path, the same as comm.
+# process, so its args are its executable path, the same as comm. A node or
+# python process is the exception: the walk reads its command line, because
+# the script it runs is its only identity. Pi names its node process "pi"
+# through process.title, which ps reports elsewhere but Windows never shows, so
+# a node running Pi's own package reads as comm "pi" here too.
 
 # A cached walk row can outlive its process by FM_WIN_CHAIN_TTL seconds, so the
 # cache answers identity and parent links only, never liveness.
 FM_WIN_CHAIN_TTL=${FM_WIN_CHAIN_TTL:-10}
 FM_PROC_PPID='' FM_PROC_PGID='' FM_PROC_COMM='' FM_PROC_ARGS='' FM_PROC_WINPID=''
-declare -gA _FM_W32_PPID=() _FM_W32_COMM=()
+declare -gA _FM_W32_PPID=() _FM_W32_COMM=() _FM_W32_ARGS=()
 
 fm_win_msys_proc() {
   local root=/proc/$1 v
@@ -41,13 +45,29 @@ _fm_win_cache_dir() {
 }
 
 _fm_win32_rows_load() {
-  local pid ppid path
-  while IFS=$'\t' read -r pid ppid path; do
+  local pid ppid path args
+  while IFS=$'\t' read -r pid ppid path args; do
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     _fm_win_image_name "$path"
+    args=${args//\\//}
     _FM_W32_PPID[$pid]=$ppid
     _FM_W32_COMM[$pid]=$_FM_WIN_NAME
+    _FM_W32_ARGS[$pid]=${args:-$_FM_WIN_NAME}
+    _fm_win_script_arg "$args"
+    case "${_FM_WIN_NAME##*/}:/$_FM_WIN_SCRIPT" in
+      node:*/pi-coding-agent/*) _FM_W32_COMM[$pid]=pi ;;
+    esac
   done <<< "$1"
+}
+
+# The script a command line hands its interpreter: the word after argv[0],
+# either of which Windows may quote.
+_fm_win_script_arg() {
+  local s=$1
+  case $s in '"'*) s=${s#\"}; s=${s#*\"} ;; *) s=${s#* } ;; esac
+  s=${s#"${s%%[! ]*}"}
+  case $s in '"'*) s=${s#\"}; s=${s%%\"*} ;; *) s=${s%% *} ;; esac
+  _FM_WIN_SCRIPT=$s
 }
 
 _fm_win32_cache_load() {
@@ -82,7 +102,8 @@ $p = Get-Process -Id ([int]$env:FM_WIN_ROOT) -ErrorAction SilentlyContinue
 for ($i = 0; $i -lt 16 -and $p; $i++) {
   $q = $null; try { $q = $p.Parent } catch {}
   $c = $p.ProcessName; try { if ($p.Path) { $c = $p.Path } } catch {}
-  "{0}`t{1}`t{2}" -f $p.Id, $(if ($q) { $q.Id } else { 0 }), $c
+  $a = ""; if ($p.ProcessName -match "^(node|python)") { try { $a = $p.CommandLine -replace "\s", " " } catch {} }
+  "{0}`t{1}`t{2}`t{3}" -f $p.Id, $(if ($q) { $q.Id } else { 0 }), $c, $a
   $p = $q
 }' 2>/dev/null) || return 1
   out=${out//$'\r'/}
@@ -133,7 +154,7 @@ fm_win_proc() {
   _fm_win_parent_msys_first "${_FM_W32_PPID[$pid]}"
   FM_PROC_PGID=$pid
   FM_PROC_COMM=${_FM_W32_COMM[$pid]}
-  FM_PROC_ARGS=$FM_PROC_COMM
+  FM_PROC_ARGS=${_FM_W32_ARGS[$pid]:-$FM_PROC_COMM}
   FM_PROC_WINPID=$pid
 }
 
