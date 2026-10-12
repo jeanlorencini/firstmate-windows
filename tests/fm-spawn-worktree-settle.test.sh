@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Regression test for the fm-spawn.sh treehouse-get worktree-detection settle
-# loop (bin/fm-spawn.sh, the post-`treehouse get` wait whose budget defaults to
-# 60s, or 180s on Windows, and is overridden by FM_SPAWN_TREEHOUSE_WAIT_SECS).
+# loop (bin/fm-spawn.sh, the `for _ in $(seq 1 60)` loop after `treehouse get`).
 #
 # On some tmux/WSL setups a brand-new window's pane_current_path transiently
 # reports a stale, unrelated-but-real path on the very first poll, before the
@@ -20,11 +19,6 @@
 # comparing only against the project adopted it and the isolation guard then
 # refused the launch. The cases below cover both the transient and the pane
 # that never leaves the primary at all.
-#
-# A third case is the slow new-slot Windows incident: the pane stays on the
-# spawning project for more than the portable 60s budget while treehouse creates
-# a pool slot, then settles. Raising FM_SPAWN_TREEHOUSE_WAIT_SECS must let that
-# spawn succeed; the portable 60s budget must still refuse it.
 set -u
 
 # shellcheck source=tests/fixtures.sh
@@ -110,33 +104,11 @@ EOF
 
 run_settle_spawn() {
   local id=$1
-  # Default the wait to the portable 60s budget so Windows' longer production
-  # default cannot stretch deadline-refusal cases into minutes of git probes.
-  # Pass a second arg to pin a different budget under test.
-  local wait_secs=${2:-60}
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
-    FM_SPAWN_TREEHOUSE_WAIT_SECS="$wait_secs" \
     FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
-    FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
-    PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
-}
-
-# Like run_settle_spawn, but the stale path is the spawning project itself
-# (the live Windows new-slot shape: pane cwd stays on the project until
-# treehouse finishes creating the slot) and FM_SPAWN_TREEHOUSE_WAIT_SECS sets
-# the wait budget under test.
-run_project_stale_spawn() {
-  local id=$1 wait_secs=$2
-  FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
-    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
-    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
-    FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
-    FM_SPAWN_TREEHOUSE_WAIT_SECS="$wait_secs" \
-    FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$PROJ_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
@@ -150,7 +122,6 @@ test_single_stale_first_read_is_not_accepted() {
   id=settle-single-stale-z1
   rec=$(make_settle_case settle-single "$id" 1)
   read_settle_record "$rec"
-  fm_test_fake_sleep_noop "$FAKEBIN_DIR"
 
   out=$(run_settle_spawn "$id")
   status=$?
@@ -172,7 +143,6 @@ test_already_settled_pane_costs_one_confirm_read() {
   id=settle-already-settled-z2
   rec=$(make_settle_case settle-already-settled "$id" 0)
   read_settle_record "$rec"
-  fm_test_fake_sleep_noop "$FAKEBIN_DIR"
 
   out=$(run_settle_spawn "$id")
   status=$?
@@ -230,8 +200,7 @@ test_transient_primary_checkout_is_not_accepted() {
 }
 
 # A pane that never leaves the primary checkout must still fail at the deadline
-# rather than waiting forever or recording the primary. Pin a short budget so
-# Windows' longer default does not multiply the isolation-check work.
+# rather than waiting forever or recording the primary.
 test_primary_checkout_that_never_settles_fails_at_the_deadline() {
   local rec id out status
   id=settle-primary-stuck-z4
@@ -239,10 +208,10 @@ test_primary_checkout_that_never_settles_fails_at_the_deadline() {
   read_settle_record "$rec"
   fm_test_fake_sleep_noop "$FAKEBIN_DIR"
 
-  out=$(run_settle_spawn "$id" 8)
+  out=$(run_settle_spawn "$id")
   status=$?
   [ "$status" -ne 0 ] || fail "spawn accepted a pane that never left the primary checkout"$'\n'"$out"
-  assert_contains "$out" "did not enter an isolated worktree within 8s" \
+  assert_contains "$out" "did not enter an isolated worktree" \
     "spawn did not explain that the pane never reached an isolated worktree"
   assert_contains "$out" "$STALE_DIR" \
     "the refusal did not name the path the pane kept reporting"
@@ -252,51 +221,9 @@ test_primary_checkout_that_never_settles_fails_at_the_deadline() {
   pass "a pane stuck on the primary checkout fails loudly at the deadline"
 }
 
-# Slow new-slot case: the pane reports the spawning project past a short
-# deadline, then settles into the real slot. The pinched budgets (8s fail /
-# 20s success, 12 project-stale reads) stand in for the live 60s-vs-180s
-# Windows incident without spending a minute on per-poll git isolation checks.
-# Fake sleep keeps the sleep(1) cost at zero either way.
-test_slow_project_stale_settles_with_elevated_wait() {
-  local rec id out status
-  id=settle-slow-slot-ok-z5
-  rec=$(make_settle_case settle-slow-ok "$id" 12)
-  read_settle_record "$rec"
-  fm_test_fake_sleep_noop "$FAKEBIN_DIR"
-
-  out=$(run_project_stale_spawn "$id" 20)
-  status=$?
-  expect_code 0 "$status" "spawn should succeed when the slot appears after the short deadline but inside the elevated wait"$'\n'"$out"
-  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
-    "meta did not record the late-settled worktree"
-  assert_no_grep "worktree=$PROJ_DIR" "$HOME_DIR/state/$id.meta" \
-    "meta wrongly recorded the spawning project as the worktree"
-  pass "a pane that stays on the project past a short deadline still settles under an elevated wait"
-}
-
-test_slow_project_stale_still_fails_at_portable_deadline() {
-  local rec id out status
-  id=settle-slow-slot-fail-z6
-  rec=$(make_settle_case settle-slow-fail "$id" 12)
-  read_settle_record "$rec"
-  fm_test_fake_sleep_noop "$FAKEBIN_DIR"
-
-  out=$(run_project_stale_spawn "$id" 8)
-  status=$?
-  [ "$status" -ne 0 ] || fail "spawn accepted a pane that was still on the project at the short deadline"$'\n'"$out"
-  assert_contains "$out" "did not enter an isolated worktree within 8s" \
-    "spawn did not name the short deadline under test"
-  assert_contains "$out" "spawning project itself" \
-    "the refusal did not say the pane was still on the project"
-  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
-  pass "a pane still on the project at a short deadline fails at that deadline"
-}
-
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_read
 test_transient_primary_checkout_is_not_accepted
 test_primary_checkout_that_never_settles_fails_at_the_deadline
-test_slow_project_stale_settles_with_elevated_wait
-test_slow_project_stale_still_fails_at_portable_deadline
 
 echo "# all fm-spawn-worktree-settle tests passed"
