@@ -96,7 +96,7 @@ bin/fm-session-lock-lib.sh	native-claude	comm=$(ps -o comm= -p "$pid" 2>/dev/nul
 bin/fm-session-lock-lib.sh	native-claude	args=$(ps -o args= -p "$pid" 2>/dev/null)
 bin/fm-session-lock-lib.sh	recorded	fm_harness_pid_alive "$lock_pid"
 bin/fm-session-lock-lib.sh	recorded	fm_harness_pid_alive "$lock_pid" || return 1
-bin/fm-session-lock-lib.sh	recorded	if kill -0 "$pid" 2>/dev/null; then
+bin/fm-session-lock-lib.sh	recorded	if kill -0 "$pid" 2>/dev/null || fm_harness_pid_alive "$pid"; then
 bin/fm-session-lock-lib.sh	recorded	if fm_harness_pid_alive "$pid"; then
 bin/fm-session-lock-lib.sh	recorded	if ps -o comm= -p "$pid" >/dev/null 2>&1; then
 bin/fm-sessionstart-nudge.sh	recorded	kill -0 "$lock_pid" 2>/dev/null || return 1

@@ -366,7 +366,8 @@ fm_session_lock_inspect() {  # <state>
       return 0
       ;;
   esac
-  if kill -0 "$pid" 2>/dev/null; then
+  # A platform overlay may know a live harness pid that kill cannot see.
+  if kill -0 "$pid" 2>/dev/null || fm_harness_pid_alive "$pid"; then
     if fm_harness_pid_alive "$pid"; then
       FM_LOCK_INSPECT_STATE=held
       FM_LOCK_INSPECT_LIVE_HARNESS=true
