@@ -128,6 +128,7 @@ test_brief_guides_workers_to_needs_decision() {
   assert_present "$brief" "local-only brief was not scaffolded"
   assert_grep "Interactive question tools are unavailable in this worker" "$brief" \
     "ship brief missing interactive-question guidance"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
   assert_grep 'append `needs-decision` in the status file and stop' "$brief" \
     "ship brief missing needs-decision routing guidance"
 
