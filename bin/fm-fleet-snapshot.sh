@@ -439,7 +439,7 @@ fm_snapshot_json_string_field_to() {  # <out-var> <json> <key>
     *"\"$__key\":"*) ;;
     *) printf -v "$1" '%s' ''; return 1 ;;
   esac
-  __rest=${__json#*\"$__key\":}
+  __rest=${__json#*\""$__key"\":}
   while [ -n "$__rest" ]; do
     case "$__rest" in
       [[:space:]]*) __rest=${__rest#?} ;;

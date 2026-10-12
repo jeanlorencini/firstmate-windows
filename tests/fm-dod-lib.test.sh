@@ -389,6 +389,7 @@ test_dod_requires_stopping_owned_processes_before_done() {
   for mode in no-mistakes direct-PR local-only; do
     out="$TMP_ROOT/dod-stop-$mode.md"
     fm_dod_block "$mode" dod-stop-procs > "$out"
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
     assert_grep 'Before appending `done`, stop every long-running process you started for the task' "$out" \
       "$mode: DoD missing the stop-owned-processes-before-done rule"
   done
