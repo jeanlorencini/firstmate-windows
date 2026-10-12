@@ -44,6 +44,10 @@ if lock=$(fm_backend_herdr_presentation_session_lock_path s1); then
 else
   ok "an existing namespace open to Everyone is refused"
 fi
-[ -d "$NS" ] && ok "the refused namespace is left as found, not repaired" || not_ok "the refused namespace is left as found"
+if [ -d "$NS" ]; then
+  ok "the refused namespace is left as found, not repaired"
+else
+  not_ok "the refused namespace is left as found"
+fi
 
 [ "$fails" -eq 0 ]

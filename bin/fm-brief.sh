@@ -155,6 +155,7 @@ IFS= read -r -d '' CREWMATE_PAUSE_INSTRUCTIONS <<EOF || true
 EOF
 # Crewmate/scout only: interactive questionnaire tools are stripped at launch,
 # so the status protocol is the only decision path back to firstmate.
+# shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief text
 INTERACTIVE_ASK_GUIDANCE='Interactive question tools are unavailable in this worker; when you need a decision, append `needs-decision` in the status file and stop.'
 
 resolve_directory_input() {

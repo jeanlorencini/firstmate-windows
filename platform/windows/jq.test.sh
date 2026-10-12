@@ -78,7 +78,11 @@ out=$(PATH="$T/shim-a:$T/shim-b:$T/fake-real:$BASE_PATH" \
   run_bounded 5 "$T/shim-a/jq" -n 1 2>"$T/err"; echo "rc=$?")
 expect "two shims then a real jq finish under the timeout" "rc=0" "$out"
 expect "two-shim resolve passes a single leading -b" "args:-b -n 1" "$(cat "$FM_WIN_JQ_TEST_LOG" 2>/dev/null || echo missing)"
-[ ! -s "$T/err" ] && ok "two-shim resolve writes no stderr" || not_ok "two-shim resolve stderr: $(cat "$T/err")"
+if [ ! -s "$T/err" ]; then
+  ok "two-shim resolve writes no stderr"
+else
+  not_ok "two-shim resolve stderr: $(cat "$T/err")"
+fi
 
 # 2) Same layout through the second shim copy.
 rm -f "$FM_WIN_JQ_TEST_LOG"
@@ -188,7 +192,11 @@ run_scenario() {  # <label> <path-prefix>
   else
     not_ok "$label shim process growth ($before -> $after)"
   fi
-  [ ! -s "$T/err" ] && ok "$label no stderr" || not_ok "$label stderr: $(cat "$T/err")"
+  if [ ! -s "$T/err" ]; then
+    ok "$label no stderr"
+  else
+    not_ok "$label stderr: $(cat "$T/err")"
+  fi
 }
 
 # (a) home-only unmarked shim on PATH
