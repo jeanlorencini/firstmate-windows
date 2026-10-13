@@ -1,0 +1,15 @@
+### D (sanity). the other branch "leaky" really carries the secret: gitleaks --log-opts leaky
+[90m7:45PM[0m [33mWRN[0m [1mleaks found: 1[0m
+exit=1
+
+### E (redo). branch commits a secret AND allowlists it by fingerprint in .gitleaksignore; main already has the gate
+4126322 allowlist
+946b371 add config
+fm-lint-secrets.sh: this branch changes the gitleaks allowlist, config, or this gate script:
+.gitleaksignore
+An allowlist change needs the captain to approve this lint finding. Do not edit .gitleaksignore, gitleaks config, or bin/fm-lint-secrets.sh, or rewrite commits to silence gitleaks; escalate instead.
+[90m7:45PM[0m [32mINF[0m [1mUnknown SCM platform. Use --platform to include links in findings.[0m [36mhost=[0m
+[90m7:45PM[0m [32mINF[0m [1m2 commits scanned.[0m
+[90m7:45PM[0m [32mINF[0m [1mscanned ~116 bytes (116 bytes) in 368ms[0m
+[90m7:45PM[0m [32mINF[0m [1mno leaks found[0m
+exit=1

@@ -1,0 +1,17 @@
+$ bin/fm-lint-secrets.sh 55d16697e4cd  (branch range, merge-base mode)
+[90m7:42PM[0m [32mINF[0m [1m7 commits scanned.[0m
+[90m7:42PM[0m [32mINF[0m [1mscanned ~18399 bytes (18.40 KB) in 612ms[0m
+[90m7:42PM[0m [32mINF[0m [1mno leaks found[0m
+exit=0
+
+$ bin/fm-lint-secrets.sh  (no merge-base: whole history reachable from HEAD)
+[90m7:42PM[0m [32mINF[0m [1m1166 commits scanned.[0m
+[90m7:42PM[0m [32mINF[0m [1mscanned ~25679464 bytes (25.68 MB) in 3.72s[0m
+[90m7:42PM[0m [32mINF[0m [1mno leaks found[0m
+exit=0
+
+$ gitleaks git --no-banner --redact .  (gitleaks default, ALL refs - the pre-F1 behaviour, for contrast)
+[90m7:42PM[0m [32mINF[0m [1m1206 commits scanned.[0m
+[90m7:42PM[0m [32mINF[0m [1mscanned ~25898616 bytes (25.90 MB) in 3.72s[0m
+[90m7:42PM[0m [33mWRN[0m [1mleaks found: 1[0m
+exit=1
