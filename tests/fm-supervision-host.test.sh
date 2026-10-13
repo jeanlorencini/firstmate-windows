@@ -159,17 +159,26 @@ stop_home_processes() {  # <home>
     kill -TERM "$pid" 2>/dev/null || true
   done
 }
-suite_cleanup() {
+stop_registered_homes() {
   local home
   while IFS= read -r home; do
     [ -n "$home" ] && stop_home_processes "$home"
   done < <(cat "$HOMES_FILE" 2>/dev/null)
+  : > "$HOMES_FILE"
+}
+suite_cleanup() {
+  stop_registered_homes
   fm_test_cleanup
 }
 trap suite_cleanup EXIT
 
 make_home() {  # <name> <attended|away|quiet> [config line]
   local home="$TMP_ROOT/$1"
+  # Cases run one at a time, so every home made before this one is finished.
+  # A close handed to main leaves its successor watcher polling until it is
+  # stopped; left running, those watchers pile up across cases and slow every
+  # later case's waits on a small runner.
+  stop_registered_homes
   mkdir -p "$home/state" "$home/config" "$home/fakebin"
   # An unreachable backend: the watcher reads no endpoint as dead, so the only
   # wakes are the status appends each case makes.

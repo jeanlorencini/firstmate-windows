@@ -296,13 +296,25 @@ done
 # A short proof budget keeps the exhausted-proof path fast; the count below is
 # what proves the proof was exhausted rather than skipped.
 C_PROOF_POLLS=3
+# The adapter issues its corrective tab focus only after it has itself read a
+# focus that differs from the anchor, so the wrong-focus window is open right
+# then. Hold that one call until the sampler records two more samples: the
+# second of them started after the hold began, so it reads the window however
+# the two processes are scheduled. The hold ends early if the sampler is gone.
 C_OUT=$(PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_FLASH_CALL_LOG="$C_CALL_LOG" \
+  FM_FLASH_SAMPLES="$C_FOCUS_SAMPLES" FM_FLASH_SAMPLER_PID="$SAMPLER_PID" \
   FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS="$C_PROOF_POLLS" bash -c '
   . "$1/bin/backends/herdr.sh"
   fm_backend_herdr_cli() {
-    local session=$1
+    local session=$1 seen
     shift
     printf "%s\n" "$*" >> "$FM_FLASH_CALL_LOG"
+    if [ "${1:-} ${2:-}" = "tab focus" ]; then
+      seen=$(wc -l < "$FM_FLASH_SAMPLES")
+      while [ "$(wc -l < "$FM_FLASH_SAMPLES")" -lt $((seen + 2)) ] && kill -0 "$FM_FLASH_SAMPLER_PID" 2>/dev/null; do
+        sleep 0.01
+      done
+    fi
     HERDR_SESSION="$session" herdr "$@" --session "$session"
   }
   fm_backend_herdr_projection_close_pane_focus_preserving "$2" "$3"
