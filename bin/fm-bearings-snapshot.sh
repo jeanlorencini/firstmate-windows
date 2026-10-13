@@ -7,7 +7,10 @@
 # left off" read needs, and renders TOON at the output boundary. The internal data
 # model stays JSON (`--json` prints it verbatim); TOON is the default agent-facing
 # format per the AXI standard, and TOON/JSON are parity representations of the same
-# projected model. The projection is view-specific: it DROPS fields from the bearings
+# projected model, except that JSON alone also carries whitespace-collapsed,
+# untruncated name_full/doing_full on in_flight rows and title_full on main and
+# secondmate queued/held gate rows, beside the unchanged truncated fields, for
+# renderers that have room for the whole text. The projection is view-specific: it DROPS fields from the bearings
 # output, it never removes them from - or otherwise weakens - the canonical snapshot,
 # which stays complete.
 #
@@ -151,6 +154,8 @@ Default fields: schema, home, generated, prs, in_flight{id,kind,state,repo,name,
   decisions_open{id,key,verb,summary,owner}, landed{id,what,artifact,owner},
   gates{id,title,blocked_by,reason,owner,filed}, reports{id,path}, recorded_prs{id,url},
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
+--json alone adds untruncated in_flight name_full,doing_full and queued/held
+  gates title_full beside the truncated fields.
 Default gates are selected newest filed first before their bound; undated gates
   retain input order after dated gates.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
@@ -381,8 +386,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson pr_rows_min_total "$PR_ROWS_MIN_TOTAL" \
   --argjson return_catchup "$RETURN_CATCHUP" \
   --argjson candidate_prs "$CANDIDATE_PRS" "$FM_LANDED_JQ_DEFS"'
-  def trunc($n): if . == null then null else
-    (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
+  def full: if . == null then null else (tostring | gsub("\\s+"; " ")) end;
+  def trunc($n): full | if . != null and length > $n then (.[:$n] + "…") else . end;
   def fit($n):
     tostring | gsub("\\s+"; " ")
     | if $n <= 0 then ""
@@ -428,7 +433,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         end
       end;
   def as_gate($owner):
-    {id, title:(.title | trunc(60)),
+    {id, title:(.title | trunc(60)), title_full:(.title | full),
      blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
      reason:(hold_gate_reason | trunc(40)), owner:$owner,
      filed:((.since // null) | trunc(40))};
@@ -508,9 +513,9 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         state: .current_state.state,
         repo:(.backlog.repo // .project // null),
         name:((.backlog.title // "") as $name
-              | (if ($name | test("[^[:space:]]")) then $name else .id end) | trunc(70)),
+              | (if ($name | test("[^[:space:]]")) then $name else .id end)),
         doing: ((.current_state.detail // "") as $d
-                | (if $d != "" then $d else (.hints.last_event_text // "") end) | trunc(90))
+                | (if $d != "" then $d else (.hints.last_event_text // "") end))
       } ]
      + [ $secondmate_views[] as $m
          | $m.active_children[]?
@@ -520,8 +525,10 @@ MODEL=$(printf '%s' "$SNAP" | jq \
             repo:(.repo // null),
             name:((.name // "") as $name
                   | (if (($name | type) == "string" and ($name | test("[^[:space:]]")))
-                     then $name else ($m.id + "/" + .id) end) | trunc(70)),
-            doing:((.doing // .state) | trunc(90))} ]) as $in_flight_all
+                     then $name else ($m.id + "/" + .id) end)),
+            doing:(.doing // .state)} ]
+     | map(. + {name:(.name | trunc(70)), name_full:(.name | full),
+                doing:(.doing | trunc(90)), doing_full:(.doing | full)})) as $in_flight_all
   | ([ .backlog.records[]
          | . as $record
          | select(.structured and .hold_bucket != null)
@@ -706,6 +713,8 @@ fi
 # the tabular array form
 # (key[N]{fields}: + comma rows at +2 indent), and the empty-array form (key: []),
 # per the TOON spec. Quoting follows the spec exactly.
+# The JSON-only full-text fields (in_flight name_full/doing_full, gates title_full)
+# are dropped here so the compact TOON stays bounded.
 TOON=$(printf '%s\n' "$MODEL" | jq -r '
   def q:
     tostring
@@ -735,6 +744,8 @@ TOON=$(printf '%s\n' "$MODEL" | jq -r '
       end
     else "\($k): " + ($v | scal)
     end;
-  [ to_entries[] | emit(.key; .value) ] | join("\n")
+  .in_flight |= map(del(.name_full, .doing_full))
+  | .gates |= map(del(.title_full))
+  | [ to_entries[] | emit(.key; .value) ] | join("\n")
 ') || { echo "fm-bearings-snapshot: TOON rendering failed" >&2; exit 1; }
 printf '%s\n' "$TOON"
