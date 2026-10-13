@@ -210,7 +210,7 @@ cmd_source_id() {
 }
 
 cmd_arm() {
-  local artifact='' task='' reply_file='' id real owner listening
+  local artifact='' task='' reply_file='' id real owner listening late
   local -a listener=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -263,18 +263,23 @@ cmd_arm() {
     printf 'note: an earlier listener is still live and serving this board; this registration takes effect only after the source is retired and armed again\n'
     exit 0
   fi
+  late=0
   if [ "$listening" -ne 0 ]; then
     owner=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-procevent.sh" list 2>/dev/null \
       | awk -v id="$id" '$1 == id { print $3; exit }')
     case "$owner" in
-      live|orphaned|task:*/listening|task:*/round-open) ;;
-      *) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-procevent.sh" retire "$id" >/dev/null 2>&1 || true ;;
+      # A live claim is the evidence ensure-listening itself accepts; the
+      # listener only took it after the confirmation window closed.
+      live) late=1 ;;
+      orphaned|task:*/listening|task:*/round-open) exit 1 ;;
+      *) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-procevent.sh" retire "$id" >/dev/null 2>&1 || true; exit 1 ;;
     esac
-    exit 1
   fi
   printf 'armed: %s\n' "$id"
   printf 'artifact: %s\n' "$real"
   [ -z "$task" ] || printf 'owner-task: %s\n' "$task"
+  [ "$late" -eq 0 ] \
+    || printf 'note: the listener started after the confirmation window closed; it is live and was not retired\n'
 }
 
 cmd_retire() {

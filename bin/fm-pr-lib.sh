@@ -277,7 +277,7 @@ fm_pr_json_draft_state() {  # <pull-request-json>
 }
 
 fm_pr_file_mode() {
-  if [ "$(uname)" = Darwin ]; then
+  if [ "${_FM_UNAME:-$(uname)}" = Darwin ]; then
     /usr/bin/stat -f %Lp "$1" 2>/dev/null
   else
     stat -c %a "$1" 2>/dev/null
@@ -285,7 +285,7 @@ fm_pr_file_mode() {
 }
 
 fm_pr_file_device() {
-  if [ "$(uname)" = Darwin ]; then
+  if [ "${_FM_UNAME:-$(uname)}" = Darwin ]; then
     /usr/bin/stat -f %d "$1" 2>/dev/null
   else
     stat -c %d "$1" 2>/dev/null
@@ -293,7 +293,7 @@ fm_pr_file_device() {
 }
 
 fm_pr_file_link_count() {
-  if [ "$(uname)" = Darwin ]; then
+  if [ "${_FM_UNAME:-$(uname)}" = Darwin ]; then
     /usr/bin/stat -f %l "$1" 2>/dev/null
   else
     stat -c %h "$1" 2>/dev/null
@@ -301,10 +301,20 @@ fm_pr_file_link_count() {
 }
 
 fm_pr_file_inode() {
-  if [ "$(uname)" = Darwin ]; then
+  if [ "${_FM_UNAME:-$(uname)}" = Darwin ]; then
     /usr/bin/stat -f %i "$1" 2>/dev/null
   else
     stat -c %i "$1" 2>/dev/null
+  fi
+}
+
+# "<device> <inode>" in one stat, the same two values fm_pr_file_device and
+# fm_pr_file_inode read separately.
+fm_pr_file_device_inode() {
+  if [ "${_FM_UNAME:-$(uname)}" = Darwin ]; then
+    /usr/bin/stat -f '%d %i' "$1" 2>/dev/null
+  else
+    stat -c '%d %i' "$1" 2>/dev/null
   fi
 }
 
@@ -314,9 +324,9 @@ fm_pr_file_inode() {
 # an identity persisted before the remount no longer matches the live file
 # (fm_pr_poll_registration_rerecord_device).
 fm_pr_file_identity() {
-  local device inode
-  device=$(fm_pr_file_device "$1") || return 1
-  inode=$(fm_pr_file_inode "$1") || return 1
+  local ids device inode
+  ids=$(fm_pr_file_device_inode "$1") || return 1
+  device=${ids%% *} inode=${ids#* }
   [ -n "$device" ] && [ -n "$inode" ] || return 1
   printf '%s:%s\n' "$device" "$inode"
 }

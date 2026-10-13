@@ -239,7 +239,7 @@
 # about the source side of the handoff.
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -260,7 +260,7 @@ usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//';
 
 case "${1-}" in ''|-h|--help|help) usage ;; esac
 
-REG=$(fm_procevent_registry_dir "$STATE")
+fm_procevent_registry_dir_to REG "$STATE"
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 EXTENSION_HOST="$SCRIPT_DIR/fm-extension.mjs"
 EXTENSION_LIFECYCLE_LOCK="$REG/.extension-binding-lifecycle.lock"
@@ -271,7 +271,7 @@ state_root_bind() {  # [create]
     (umask 077; mkdir -p "$STATE") || return 1
   fi
   STATE=$(fm_procevent_state_root_resolve "$STATE") || return 1
-  REG=$(fm_procevent_registry_dir "$STATE")
+  fm_procevent_registry_dir_to REG "$STATE"
   EXTENSION_LIFECYCLE_LOCK="$REG/.extension-binding-lifecycle.lock"
   FM_STATE_OVERRIDE=$STATE
   export FM_STATE_OVERRIDE
@@ -405,7 +405,28 @@ adapter_self_announcing() {  # <adapter>
   "$script" self-announcing >/dev/null 2>&1
 }
 
+source_file_to() { printf -v "$1" '%s/%s.source' "$REG" "$2"; }  # <var> <source-id>
 source_file()  { printf '%s/%s.source\n' "$REG" "$1"; }
+# The first <field>= line's value, or empty: what $(source_field ...) gave, read
+# in this shell. Fields are fixed words with no regex metacharacters, and
+# FM_PROCEVENT_MSYS_CR strips what sed and $(...) dropped.
+source_field_to() {  # <var> <source-id> <field>
+  local _fm_sf_file _fm_sf_line
+  printf -v "$1" '%s' ''
+  source_file_to _fm_sf_file "$2"
+  while :; do
+    if IFS= read -r _fm_sf_line; then
+      _fm_sf_line=${_fm_sf_line%"$FM_PROCEVENT_MSYS_CR"}
+      _fm_sf_line=${_fm_sf_line%"$FM_PROCEVENT_MSYS_CR"}
+    else
+      [ -n "$_fm_sf_line" ] || break
+    fi
+    case "$_fm_sf_line" in
+      "$3="*) printf -v "$1" '%s' "${_fm_sf_line#"$3="}"; return 0 ;;
+    esac
+  done 2>/dev/null < "$_fm_sf_file"
+  return 0
+}
 source_field() {  # <source-id> <field>
   sed -n "s/^$2=//p" "$(source_file "$1")" | head -1
 }
@@ -478,6 +499,14 @@ feed_reconcile_requests() {  # <adapter> <source-id> <result-file>
         --source-id "$id" --source "the captured result $id sequence $seq" >/dev/null 2>&1
 }
 
+read_adapter_to() {  # <var> <source-id>
+  local _fm_ra_file
+  printf -v "$1" '%s' ''
+  source_file_to _fm_ra_file "$2"
+  [ -f "$_fm_ra_file" ] && [ ! -L "$_fm_ra_file" ] || return 1
+  source_field_to "$1" "$2" adapter
+}
+
 read_adapter() {  # <source-id>
   local f; f=$(source_file "$1")
   [ -f "$f" ] && [ ! -L "$f" ] || return 1
@@ -485,18 +514,41 @@ read_adapter() {  # <source-id>
 }
 
 # Read the stored argv into the ARGV array. One argument per line after the
-# argv= count, so an argument containing spaces is not re-split.
+# argv= count, so an argument containing spaces is not re-split. One pass gives
+# what $(sed -n 's/^argc=//p' | head -1) and the newline-terminated lines after
+# the first exact argv: line gave.
 read_argv() {  # <source-id>
-  local f n; f=$(source_file "$1")
+  local f n='' seen_argc=0 in_argv=0 partial line i
+  local -a lines=()
+  source_file_to f "$1"
   ARGV=()
   [ -f "$f" ] && [ ! -L "$f" ] || return 1
-  n=$(sed -n 's/^argc=//p' "$f" | head -1)
+  while :; do
+    partial=0
+    IFS= read -r line || { [ -n "$line" ] || break; partial=1; }
+    # Argv lines went through sed alone; the argc value also through $(...).
+    [ "$partial" -eq 1 ] || line=${line%"$FM_PROCEVENT_MSYS_CR"}
+    if [ "$seen_argc" -eq 0 ]; then
+      case "$line" in
+        argc=*)
+          n=${line#argc=} seen_argc=1
+          [ "$partial" -eq 1 ] || n=${n%"$FM_PROCEVENT_MSYS_CR"}
+          ;;
+      esac
+    fi
+    [ "$partial" -eq 0 ] || break
+    if [ "$in_argv" -eq 1 ]; then
+      lines+=("$line")
+    elif [ "$line" = argv: ]; then
+      in_argv=1
+    fi
+  done < "$f"
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
-  local i=0 line
-  while IFS= read -r line; do
+  i=0
+  while [ "$i" -lt "${#lines[@]}" ] && [ "$i" -lt "$n" ]; do
+    ARGV+=("${lines[$i]}")
     i=$((i + 1))
-    [ "$i" -le "$n" ] && ARGV+=("$line")
-  done < <(sed -n '/^argv:$/,$p' "$f" | tail -n +2)
+  done
   [ "${#ARGV[@]}" -eq "$n" ]
 }
 
@@ -970,15 +1022,16 @@ cmd_start_public() {
 
 cmd_start() {
   local id=${1-} adapter out rc claimed bound_rc published_capture=0 handled_capture=0 self_announcing=0 task_owner='' task_pending
-  local extension_owner=0 extension_load_state extension_sequence='' extension_request_id=''
+  local extension_owner=0 extension_load_state extension_sequence='' extension_request_id='' registration kind
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   require_runner_group
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
-  if [ ! -f "$(source_file "$id")" ] || [ -L "$(source_file "$id")" ]; then
+  source_file_to registration "$id"
+  if [ ! -f "$registration" ] || [ -L "$registration" ]; then
     fm_procevent_source_lock_release "$id"
     die "source is not registered: $id"
   fi
-  if ! adapter=$(read_adapter "$id"); then
+  if ! read_adapter_to adapter "$id"; then
     fm_procevent_source_lock_release "$id"
     die "registration is unreadable: $id"
   fi
@@ -986,8 +1039,9 @@ cmd_start() {
     fm_procevent_source_lock_release "$id"
     die "registration names an invalid adapter"
   fi
-  if [ "$(source_kind "$id" 2>/dev/null || true)" = task-owned ]; then
-    task_owner=$(source_owner_task "$id" 2>/dev/null || true)
+  source_field_to kind "$id" kind
+  if [ "$kind" = task-owned ]; then
+    source_field_to task_owner "$id" owner_task
     task_pending=$(source_pending "$id" | head -1)
     if [ -n "$task_pending" ]; then
       fm_procevent_source_lock_release "$id"
@@ -1036,11 +1090,11 @@ cmd_start() {
   # Descriptor 7 stays open on the registration this claim names until the
   # claim moves on, so no later registration can reuse its inode and pass as
   # the claimed generation in a dev:inode comparison. Source commands close it.
-  exec 7<"$(source_file "$id")" || {
+  exec 7<"$registration" || {
     fm_procevent_source_lock_release "$id"
     die "cannot retain registration identity: $id"
   }
-  fm_procevent_claim_acquire_locked "$id" "$FM_HOME" "$$" "$(source_file "$id")" "$STATE"
+  fm_procevent_claim_acquire_locked "$id" "$FM_HOME" "$$" "$registration" "$STATE"
   claimed=$?
   fm_procevent_source_lock_release "$id"
   case "$claimed" in
@@ -1086,7 +1140,7 @@ cmd_start() {
     script=$(adapter_script "$adapter")
     [ -f "$script" ] && [ ! -L "$script" ] || return 1
     "$script" relisten >/dev/null 2>&1 || return 1
-    registration=$(source_file "$id")
+    source_file_to registration "$id"
     [ -f "$registration" ] && [ ! -L "$registration" ] || return 1
     fm_procevent_source_lock_acquire "$id" || return 1
     if ! fm_procevent_claim_load_locked "$id" 2>/dev/null \
@@ -1097,7 +1151,7 @@ cmd_start() {
       fm_procevent_source_lock_release "$id"
       return 1
     fi
-    now_adapter=$(read_adapter "$id" 2>/dev/null || true)
+    read_adapter_to now_adapter "$id" || true
     current=$(fm_pr_file_identity "$registration" 2>/dev/null || true)
     previous=("${ARGV[@]}")
     if [ "$now_adapter" != "$adapter" ] || [ -z "$current" ] || ! read_argv "$id"; then
@@ -1670,7 +1724,7 @@ stranded_leaderless_detail() {  # <source-id>
 
 cmd_reconcile() {
   local rec id published started=0 stopped=0 uncertain=0 failed=0 claim owner pid token identity claim_state stop_state task_pending
-  local launch_identity launch_stamp launch_mark unconfirmed entry
+  local launch_identity launch_stamp launch_mark unconfirmed entry claim_root registration kind
   local -a launched=()
   # Rejected before anything is launched, and by name. A window this command
   # cannot use makes every launch unconfirmable, so validating it later would
@@ -1683,12 +1737,14 @@ cmd_reconcile() {
   # Stop a runner this home owns whose source is no longer registered. Without
   # this, unregistering a source that never completes leaves its child blocked
   # forever with nothing left to reap it.
-  for claim in "$(fm_procevent_claim_root)"/*.claim; do
+  fm_procevent_claim_root_to claim_root
+  for claim in "$claim_root"/*.claim; do
     [ -e "$claim" ] || continue
     id=${claim##*/}; id=${id%.claim}
     fm_procevent_source_id_valid "$id" || continue
     fm_procevent_source_lock_acquire "$id" || continue
-    if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
+    source_file_to registration "$id"
+    if [ -f "$registration" ] && [ ! -L "$registration" ]; then
       fm_procevent_source_lock_release "$id"
       continue
     fi
@@ -1728,10 +1784,12 @@ cmd_reconcile() {
       id=${rec##*/}; id=${id%.source}
       fm_procevent_source_id_valid "$id" || continue
       fm_procevent_source_lock_acquire "$id" || continue
-      if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
+      source_file_to registration "$id"
+      if [ -f "$registration" ] && [ ! -L "$registration" ]; then
         fm_procevent_claim_state_locked "$id"
         claim_state=$?
-        if [ "$(source_kind "$id" 2>/dev/null || true)" = task-owned ]; then
+        source_field_to kind "$id" kind
+        if [ "$kind" = task-owned ]; then
           task_pending=$(source_pending "$id" | head -1)
           if [ -n "$task_pending" ]; then
             fm_procevent_source_lock_release "$id"
@@ -1762,7 +1820,7 @@ cmd_reconcile() {
           # this stamp after it claims and before it runs the source command,
           # and nothing removes it on the way out, so an advanced or newly
           # appeared value is durable evidence the launch got going.
-          launch_identity=$(fm_pr_file_identity "$(source_file "$id")" 2>/dev/null) || launch_identity=
+          launch_identity=$(fm_pr_file_identity "$registration" 2>/dev/null) || launch_identity=
           launch_mark=
           if [ -n "$launch_identity" ] \
             && launch_stamp=$(fm_procevent_launch_floor_stamp_path "$STATE" "$id" "$launch_identity"); then
@@ -1777,9 +1835,9 @@ cmd_reconcile() {
           pid=$FM_PROCEVENT_CLAIM_PID
           token=$FM_PROCEVENT_CLAIM_TOKEN
           if fm_procevent_claim_owned_by_state "$STATE" "$FM_HOME" \
-            && rm -f -- "$(source_file "$id")" \
-            && [ ! -e "$(source_file "$id")" ] \
-            && [ ! -L "$(source_file "$id")" ] \
+            && rm -f -- "$registration" \
+            && [ ! -e "$registration" ] \
+            && [ ! -L "$registration" ] \
             && fm_procevent_claim_reclaim_locked "$id" "$owner" "$pid" "$token" 2>/dev/null; then
             stopped=$((stopped + 1))
           else
@@ -1937,14 +1995,15 @@ generation_can_launch() {  # <source-id>
 # launch stamp advancing. Returns as soon as either appears. A fixed sleep is
 # not success.
 cmd_ensure_listening() {
-  local id=${1-} identity before mark stamp deadline window started_once=0 listening
+  local id=${1-} identity before mark stamp deadline window started_once=0 listening registration
   [ "$#" -eq 1 ] || usage
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   window=$(fm_procevent_launch_confirm_seconds) \
     || die "FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS must be whole seconds from $FM_PROCEVENT_LAUNCH_CONFIRM_MIN_SECONDS to $FM_PROCEVENT_LAUNCH_CONFIRM_MAX_SECONDS"
-  [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ] \
+  source_file_to registration "$id"
+  [ -f "$registration" ] && [ ! -L "$registration" ] \
     || die "source is not registered: $id"
-  identity=$(fm_pr_file_identity "$(source_file "$id")" 2>/dev/null) \
+  identity=$(fm_pr_file_identity "$registration" 2>/dev/null) \
     || die "cannot identify the registration: $id"
   before=
   if stamp=$(fm_procevent_launch_floor_stamp_path "$STATE" "$id" "$identity"); then
@@ -2394,9 +2453,9 @@ cmd_list() {
   for rec in "$REG"/*.source; do
     [ -e "$rec" ] || continue
     id=${rec##*/}; id=${id%.source}
-    adapter=$(read_adapter "$id" 2>/dev/null || echo '?')
-    kind=$(source_kind "$id" 2>/dev/null || true)
-    task=$(source_owner_task "$id" 2>/dev/null || true)
+    read_adapter_to adapter "$id" || adapter='?'
+    source_field_to kind "$id" kind
+    source_field_to task "$id" owner_task
     fm_procevent_source_lock_acquire "$id" || continue
     fm_procevent_claim_state_locked "$id"
     claim_state=$?

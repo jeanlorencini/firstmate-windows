@@ -29,12 +29,38 @@
 # runner as at-least-once, no-loss, or lossless, and never claim generic
 # exactly-once effects from the handled acknowledgement alone.
 
+# Hot paths (every runner start and reconcile cycle) read with `read`, `printf
+# -v` and parameter expansion what they read with $(sed ...) and $(helper). On
+# Git Bash (MSYS) that older path dropped a CR before LF at two steps: sed reads
+# in text mode, and command substitution strips a CR with each trailing newline.
+# The replacements strip this once per step they replace from a
+# newline-terminated value; elsewhere it is empty and strips nothing.
+case ${_FM_UNAME:-} in
+  MINGW*|MSYS*) FM_PROCEVENT_MSYS_CR=$'\r' ;;
+  *) FM_PROCEVENT_MSYS_CR= ;;
+esac
+
 # Machine-wide claim root. Homes can share one underlying source store, so the
 # "one owner per canonical source" rule cannot live inside a single home.
 fm_procevent_claim_root() {
   printf '%s\n' "${FM_PROCEVENT_CLAIM_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/procevent-claims}"
 }
 
+# The *_to forms assign what $(...) of their printing form gave, without the
+# subshell.
+fm_procevent_claim_root_to() {  # <var>
+  local _fm_cr=$FM_PROCEVENT_MSYS_CR
+  printf -v "$1" '%s\n' "${FM_PROCEVENT_CLAIM_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/procevent-claims}"
+  while :; do
+    case ${!1} in
+      *"$_fm_cr"$'\n') printf -v "$1" '%s' "${!1%"$_fm_cr"$'\n'}" ;;
+      *$'\n') printf -v "$1" '%s' "${!1%$'\n'}" ;;
+      *) break ;;
+    esac
+  done
+}
+
+fm_procevent_registry_dir_to() { printf -v "$1" '%s/procevent' "$2"; }  # <var> <state>
 fm_procevent_registry_dir() { printf '%s\n' "$1/procevent"; }
 fm_procevent_inbox_dir()    { printf '%s\n' "$1/procevent-inbox"; }
 fm_procevent_capture_reservation_dir() { printf '%s\n' "$1/procevent-capture-reservations"; }
@@ -94,7 +120,7 @@ fm_procevent_extension_registration_token_valid() {
 # fm_procevent_any_registered <state>
 fm_procevent_any_registered() {
   local reg rec
-  reg=$(fm_procevent_registry_dir "$1")
+  fm_procevent_registry_dir_to reg "$1"
   [ -d "$reg" ] || return 1
   for rec in "$reg"/*.source; do
     [ -e "$rec" ] || continue
@@ -121,14 +147,16 @@ fm_procevent_any_registered() {
 # name, a command line, or a process name, all of which are shared across homes.
 
 fm_procevent_owner_lease_path() {  # <state-root>
-  printf '%s/.owner-lease\n' "$(fm_procevent_registry_dir "$1")"
+  local reg
+  fm_procevent_registry_dir_to reg "$1"
+  printf '%s/.owner-lease\n' "$reg"
 }
 
 # Record owner-presence activity in this home's process-event state. Best
 # effort by design: a home with no registry directory yet owns no runner.
 fm_procevent_owner_lease_touch() {  # <state-root>
   local reg lease tmp now
-  reg=$(fm_procevent_registry_dir "$1")
+  fm_procevent_registry_dir_to reg "$1"
   [ -d "$reg" ] && [ ! -L "$reg" ] || return 1
   lease=$(fm_procevent_owner_lease_path "$1")
   now=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e \
@@ -240,7 +268,7 @@ fm_procevent_launch_floor_stamp_path() {  # <state-root> <source-id> <registrati
   case "$3" in *:*) ;; *) return 1 ;; esac
   case "$3" in ''|*[!0-9:]*) return 1 ;; esac
   fm_procevent_source_id_valid "$2" || return 1
-  reg=$(fm_procevent_registry_dir "$1") || return 1
+  fm_procevent_registry_dir_to reg "$1" || return 1
   identity=${3//:/-}
   printf '%s\n' "$reg/$2.$identity.last-launch"
 }
@@ -254,7 +282,7 @@ fm_procevent_launch_floor_reset_locked() {  # <state-root> <source-id> <registra
 fm_procevent_launch_floor_prune_locked() {  # <state-root> <source-id> <registration-identity>
   local reg keep stamp
   keep=$(fm_procevent_launch_floor_stamp_path "$1" "$2" "$3") || return 1
-  reg=$(fm_procevent_registry_dir "$1") || return 1
+  fm_procevent_registry_dir_to reg "$1" || return 1
   for stamp in "$reg/$2".*.last-launch "$reg/$2.last-launch"; do
     [ "$stamp" = "$keep" ] && continue
     [ -e "$stamp" ] || [ -L "$stamp" ] || continue
@@ -265,7 +293,7 @@ fm_procevent_launch_floor_prune_locked() {  # <state-root> <source-id> <registra
 fm_procevent_launch_floor_wait() {  # <state-root> <source-id> <registration-identity> <seconds>
   local state=$1 id=$2 expected=$3 floor=$4 reg stamp registration current_identity status=0
   stamp=$(fm_procevent_launch_floor_stamp_path "$state" "$id" "$expected") || return 1
-  reg=$(fm_procevent_registry_dir "$state") || return 1
+  fm_procevent_registry_dir_to reg "$state" || return 1
   [ ! -L "$stamp" ] || return 1
   [ ! -e "$stamp" ] || [ -f "$stamp" ] || return 1
   perl -MTime::HiRes=clock_gettime,sleep,CLOCK_MONOTONIC -e '
@@ -327,8 +355,18 @@ fm_procevent_owner_alive() {  # <state-root> <lease-seconds>
 # and process identity. Registration and every ownership transition are
 # serialized at one source boundary.
 
+fm_procevent_claim_path_to() {  # <var> <source-id>
+  fm_procevent_claim_root_to "$1"
+  printf -v "$1" '%s/%s.claim' "${!1}" "$2"
+}
+
 fm_procevent_claim_path() {
   printf '%s/%s.claim\n' "$(fm_procevent_claim_root)" "$1"
+}
+
+fm_procevent_source_lock_path_to() {  # <var> <source-id>
+  fm_procevent_claim_root_to "$1"
+  printf -v "$1" '%s/%s.lock' "${!1}" "$2"
 }
 
 fm_procevent_source_lock_path() {
@@ -336,28 +374,32 @@ fm_procevent_source_lock_path() {
 }
 
 fm_procevent_source_lock_acquire() {
-  local id=$1 root
+  local id=$1 root lock
   fm_procevent_source_id_valid "$id" || return 1
-  root=$(fm_procevent_claim_root)
-  (umask 077; mkdir -p "$root") || return 1
+  fm_procevent_claim_root_to root
+  [ -d "$root" ] || (umask 077; mkdir -p "$root") || return 1
   [ -d "$root" ] && [ ! -L "$root" ] || return 1
-  fm_lock_acquire_wait "$(fm_procevent_source_lock_path "$id")"
+  fm_procevent_source_lock_path_to lock "$id"
+  fm_lock_acquire_wait "$lock"
 }
 
 # fm_procevent_source_lock_try_acquire <source-id>
 # Non-blocking acquisition for release_start_claim in bin/fm-procevent.sh;
 # that caller owns the exit-cleanup lock-order invariant.
 fm_procevent_source_lock_try_acquire() {
-  local id=$1 root
+  local id=$1 root lock
   fm_procevent_source_id_valid "$id" || return 1
-  root=$(fm_procevent_claim_root)
-  (umask 077; mkdir -p "$root") || return 1
+  fm_procevent_claim_root_to root
+  [ -d "$root" ] || (umask 077; mkdir -p "$root") || return 1
   [ -d "$root" ] && [ ! -L "$root" ] || return 1
-  fm_lock_try_acquire "$(fm_procevent_source_lock_path "$id")"
+  fm_procevent_source_lock_path_to lock "$id"
+  fm_lock_try_acquire "$lock"
 }
 
 fm_procevent_source_lock_release() {
-  fm_lock_release "$(fm_procevent_source_lock_path "$1")"
+  local lock
+  fm_procevent_source_lock_path_to lock "$1"
+  fm_lock_release "$lock"
 }
 
 fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <argv...>
@@ -369,7 +411,7 @@ fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <a
   for arg in "$@"; do
     case "$arg" in *$'\n'*) return 1 ;; esac
   done
-  reg=$(fm_procevent_registry_dir "$state")
+  fm_procevent_registry_dir_to reg "$state"
   (umask 077; mkdir -p "$reg") || return 1
   [ -d "$reg" ] && [ ! -L "$reg" ] || return 1
   dest="$reg/$id.source"
@@ -402,7 +444,7 @@ fm_procevent_task_registration_publish_locked() {  # <state> <adapter> <source-i
   for arg in "$@"; do
     case "$arg" in *$'\n'*) return 1 ;; esac
   done
-  reg=$(fm_procevent_registry_dir "$state")
+  fm_procevent_registry_dir_to reg "$state"
   (umask 077; mkdir -p "$reg") || return 1
   [ -d "$reg" ] && [ ! -L "$reg" ] || return 1
   dest="$reg/$id.source"
@@ -440,7 +482,7 @@ fm_procevent_extension_registration_publish_locked() {  # <state> <adapter> <sou
   fm_procevent_digest_valid "$binding_digest" || return 1
   fm_procevent_extension_config_ref_valid "$config_ref" || return 1
   fm_procevent_extension_registration_token_valid "$registration_token" || return 1
-  reg=$(fm_procevent_registry_dir "$state")
+  fm_procevent_registry_dir_to reg "$state"
   (umask 077; mkdir -p "$reg") || return 1
   [ -d "$reg" ] && [ ! -L "$reg" ] || return 1
   dest="$reg/$id.source"
@@ -475,9 +517,17 @@ fm_procevent_extension_registration_publish_locked() {  # <state> <adapter> <sou
 fm_procevent_extension_registration_load_locked() {  # <state> <source-id>
   local state=$1 id=$2 file adapter_line owner_line schema_line id_line version_line capability_line
   local package_line binding_line config_line token_line argc_line argv_line extra
-  file="$(fm_procevent_registry_dir "$state")/$id.source"
+  fm_procevent_registry_dir_to file "$state"
+  file="$file/$id.source"
   [ -f "$file" ] && [ ! -L "$file" ] || return 2
-  owner_line=$(sed -n '2p' "$file") || return 2
+  # Line 2, or empty when there is none, exactly as sed -n 2p printed it.
+  {
+    IFS= read -r owner_line
+    if IFS= read -r owner_line; then
+      owner_line=${owner_line%"$FM_PROCEVENT_MSYS_CR"}
+      owner_line=${owner_line%"$FM_PROCEVENT_MSYS_CR"}
+    fi
+  } < "$file" || return 2
   [ "$owner_line" = owner=extension ] || return 1
   [ "$(fm_pr_file_mode "$file")" = 600 ] \
     && [ "$(fm_pr_file_link_count "$file")" = 1 ] || return 2
@@ -535,7 +585,7 @@ fm_procevent_registration_matches_locked() {  # <state> <adapter> <source-id> <a
   for arg in "$@"; do
     case "$arg" in *$'\n'*) return 1 ;; esac
   done
-  reg=$(fm_procevent_registry_dir "$state")
+  fm_procevent_registry_dir_to reg "$state"
   [ -d "$reg" ] && [ ! -L "$reg" ] || return 1
   dest="$reg/$id.source"
   [ -f "$dest" ] && [ ! -L "$dest" ] || return 1
@@ -554,7 +604,7 @@ fm_procevent_registration_matches_locked() {  # <state> <adapter> <source-id> <a
 
 fm_procevent_claim_load_locked() {  # <source-id>
   local claim home pid token identity reg_dir reg_identity terminal state_root state_device state_inode state_owner state_mode extra
-  claim=$(fm_procevent_claim_path "$1")
+  fm_procevent_claim_path_to claim "$1"
   [ -f "$claim" ] && [ ! -L "$claim" ] || return 1
   {
     IFS= read -r home \
@@ -617,13 +667,19 @@ fm_procevent_claim_state_root_field_valid() {  # <canonical-state-root>
 }
 
 fm_procevent_claim_state_root_identity() {  # <state-root>
-  local state=$1 canonical device inode owner mode
+  local state=$1 canonical ids device inode owner mode
   canonical=$(fm_procevent_state_root_resolve "$state") || return 1
   fm_procevent_claim_state_root_field_valid "$canonical" || return 1
-  device=$(fm_pr_file_device "$canonical") || return 1
-  inode=$(fm_pr_file_inode "$canonical") || return 1
-  owner=$(id -u) || return 1
-  mode=$(fm_pr_file_mode "$canonical") || return 1
+  # One stat for the values fm_pr_file_device, fm_pr_file_inode and
+  # fm_pr_file_mode read separately; $EUID is what id -u prints.
+  if [ "${_FM_UNAME:-$(uname)}" = Darwin ]; then
+    ids=$(/usr/bin/stat -f '%d %i %Lp' "$canonical" 2>/dev/null) || return 1
+  else
+    ids=$(stat -c '%d %i %a' "$canonical" 2>/dev/null) || return 1
+  fi
+  device=${ids%% *} mode=${ids#* }
+  inode=${mode%% *} mode=${mode#* }
+  owner=$EUID
   printf '%s\t%s\t%s\t%s\t%s\n' "$canonical" "$device" "$inode" "$owner" "$mode"
 }
 
@@ -686,7 +742,9 @@ fm_procevent_claim_generation_gone_locked() {
 # collecting. A source that needs a human beats a source that silently eats what
 # it was supposed to deliver.
 fm_procevent_claim_undisplaceable_locked() {  # <source-id>
-  [ -e "$(fm_procevent_claim_path "$1")" ] || return 1
+  local claim
+  fm_procevent_claim_path_to claim "$1"
+  [ -e "$claim" ] || return 1
   ! fm_procevent_claim_generation_gone_locked
 }
 
@@ -738,7 +796,7 @@ fm_procevent_pid_state() {
 # process group still alive, 4 terminal retirement pending.
 fm_procevent_claim_state_locked() {
   local claim registration current_identity
-  claim=$(fm_procevent_claim_path "$1")
+  fm_procevent_claim_path_to claim "$1"
   [ -e "$claim" ] || return 1
   fm_procevent_claim_load_locked "$1" || return 2
   if [ "$FM_PROCEVENT_CLAIM_TERMINAL" = terminal ] && [ -n "$FM_PROCEVENT_CLAIM_REG_IDENTITY" ]; then
@@ -759,8 +817,8 @@ fm_procevent_claim_acquire_locked() {
   case "$reg_dir" in /*) ;; *) return 1 ;; esac
   reg_identity=$(fm_pr_file_identity "$registration" 2>/dev/null) || return 1
   identity=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
-  root=$(fm_procevent_claim_root)
-  claim=$(fm_procevent_claim_path "$id")
+  fm_procevent_claim_root_to root
+  fm_procevent_claim_path_to claim "$id"
   status=0
   if [ -e "$claim" ] || [ -L "$claim" ]; then
     fm_procevent_claim_state_locked "$id"
@@ -851,13 +909,13 @@ fm_procevent_claim_acquire_locked() {
 
 fm_procevent_claim_mark_terminal_locked() {
   local id=$1 home=$2 pid=$3 token=$4 claim root tmp
-  claim=$(fm_procevent_claim_path "$id")
+  fm_procevent_claim_path_to claim "$id"
   fm_procevent_claim_load_locked "$id" \
     && [ "$FM_PROCEVENT_CLAIM_HOME" = "$home" ] \
     && [ "$FM_PROCEVENT_CLAIM_PID" = "$pid" ] \
     && [ "$FM_PROCEVENT_CLAIM_TOKEN" = "$token" ] \
     && [ -n "$FM_PROCEVENT_CLAIM_REG_IDENTITY" ] || return 1
-  root=$(fm_procevent_claim_root)
+  fm_procevent_claim_root_to root
   tmp=$(umask 077; mktemp "$root/.claim.XXXXXX") || return 1
   if [ -n "$FM_PROCEVENT_CLAIM_STATE_ROOT" ]; then
     if printf '%s\n%s\n%s\n%s\n%s\n%s\nterminal\n%s\n%s\n%s\n%s\n%s\n' \
@@ -894,13 +952,13 @@ fm_procevent_claim_adopt_registration_locked() {  # <source-id> <home> <pid> <to
   local id=$1 home=$2 pid=$3 token=$4 reg_identity=$5 claim root tmp
   case "$reg_identity" in *[!0-9:]*) return 1 ;; esac
   case "$reg_identity" in *:*) ;; *) return 1 ;; esac
-  claim=$(fm_procevent_claim_path "$id")
+  fm_procevent_claim_path_to claim "$id"
   fm_procevent_claim_load_locked "$id" \
     && [ "$FM_PROCEVENT_CLAIM_HOME" = "$home" ] \
     && [ "$FM_PROCEVENT_CLAIM_PID" = "$pid" ] \
     && [ "$FM_PROCEVENT_CLAIM_TOKEN" = "$token" ] \
     && [ "$FM_PROCEVENT_CLAIM_TERMINAL" = active ] || return 1
-  root=$(fm_procevent_claim_root)
+  fm_procevent_claim_root_to root
   tmp=$(umask 077; mktemp "$root/.claim.XXXXXX") || return 1
   if [ -n "$FM_PROCEVENT_CLAIM_STATE_ROOT" ]; then
     if printf '%s\n%s\n%s\n%s\n%s\n%s\nactive\n%s\n%s\n%s\n%s\n%s\n' \
@@ -953,7 +1011,7 @@ fm_procevent_claim_reclaim_locked() {
 fm_procevent_claim_release_mode_locked() {
   local mode=$1 id=$2 home=$3 pid=$4 token=$5 claim
   fm_procevent_source_id_valid "$id" || return 1
-  claim=$(fm_procevent_claim_path "$id")
+  fm_procevent_claim_path_to claim "$id"
   [ -e "$claim" ] || return 0
   if fm_procevent_claim_load_locked "$id" \
     && [ "$FM_PROCEVENT_CLAIM_HOME" = "$home" ] \
@@ -995,17 +1053,19 @@ fm_procevent_path_normalize() {
       *) normalized+=("$part") ;;
     esac
   done
-  printf '/%s\n' "$(IFS=/; printf '%s' "${normalized[*]}")"
+  local IFS=/
+  printf -v path '%s' "${normalized[*]}"
+  printf '/%s\n' "$path"
 }
 
 fm_procevent_directory_owned_by_current_user() {
   local owner
-  if [ "$(uname)" = Darwin ]; then
+  if [ "${_FM_UNAME:-$(uname)}" = Darwin ]; then
     owner=$(/usr/bin/stat -f %u "$1" 2>/dev/null)
   else
     owner=$(stat -c %u "$1" 2>/dev/null)
   fi
-  [ "$owner" = "$(id -u)" ]
+  [ "$owner" = "$EUID" ]
 }
 
 # fm_procevent_state_root_resolve <state-root>
@@ -1056,7 +1116,7 @@ fm_procevent_capture_inbox_prepare() {
 fm_procevent_extension_staging_prepare() {
   local state=$1 registry
   state=$(fm_procevent_state_root_resolve "$state") || return 1
-  registry=$(fm_procevent_registry_dir "$state")
+  fm_procevent_registry_dir_to registry "$state"
   fm_procevent_private_directory_valid "$registry" 1 || return 1
   printf '%s\n' "$registry"
 }

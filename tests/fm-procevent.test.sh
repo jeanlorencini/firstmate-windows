@@ -4626,6 +4626,78 @@ PATH="$LIVE/bin:$PATH" FM_HOME="$LIVE/home" \
   "$ROOT/bin/fm-procevent-lavish.sh" retire "$live_art" >/dev/null 2>&1 || true
 pass "re-arm over a live earlier listener reports it still serving the board"
 
+# A slow host can start this generation's listener after the confirm window has
+# closed. The stand-in mktemp holds the runner inside its source lock, at the
+# claim write, until ensure-listening has given up; arm's owner read then waits
+# on that lock and sees the claim. A live claim of this generation is the
+# evidence ensure-listening accepts, so arm reports it armed, says it started
+# late, and leaves it running. When the runner can never claim, the owner reads
+# none and arm still fails and retires the registration.
+arm_late_claim() {  # <dir> late|never
+  local dir=$1 mode=$2 art id rc
+  mkdir -p "$dir/bin" "$dir/home/state"
+  cp "$READY/bin/lavish-axi" "$dir/bin/lavish-axi"
+  cat > "$dir/bin/mktemp" <<SH
+#!/usr/bin/env bash
+case "\${*: -1}" in
+  */.claim.XXXXXX)
+    [ "$mode" = late ] || exit 1
+    i=0
+    until grep -q 'listener is not running' "$dir/arm.err" 2>/dev/null || [ "\$i" -ge 600 ]; do
+      sleep 0.1; i=\$((i + 1))
+    done
+    ;;
+esac
+exec $(command -v mktemp) "\$@"
+SH
+  chmod +x "$dir/bin/mktemp"
+  art="$dir/board.html"
+  printf '<h1>%s</h1>\n' "$mode" > "$art"
+  lavish_session "$art"
+  id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$art")
+  fm_test_track_procevent_home "$dir/home"
+  export READY_MARK="$dir/mark" READY_RELEASE="$dir/release"
+  : > "$READY_MARK"
+  : > "$dir/arm.err"
+  set +e
+  PATH="$dir/bin:$PATH" FM_HOME="$dir/home" FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=1 \
+    "$ROOT/bin/fm-procevent-lavish.sh" arm "$art" > "$dir/arm.out" 2>> "$dir/arm.err"
+  rc=$?
+  set -e
+  printf '%s\n' "$rc" > "$dir/rc"
+  printf '%s\n' "$id" > "$dir/id"
+}
+
+LATE="$TMP_ROOT/late-arm"
+arm_late_claim "$LATE" late
+late_id=$(cat "$LATE/id")
+[ "$(cat "$LATE/rc")" -eq 0 ] \
+  || fail "arm failed although its listener took a live claim after the window ($(cat "$LATE/rc")): $(cat "$LATE/arm.err")"
+assert_contains "$(cat "$LATE/arm.out")" "armed: $late_id" \
+  "arm did not report a listener that claimed after the window as armed"
+assert_contains "$(cat "$LATE/arm.out")" "started after the confirmation window closed; it is live and was not retired" \
+  "arm did not say the listener started late, is live, and was not retired"
+assert_present "$LATE/home/state/procevent/$late_id.source" \
+  "arm retired a source whose listener is live"
+[ "$(pe "$LATE/home" list | awk -v id="$late_id" '$1 == id { print $3 }')" = live ] \
+  || fail "the late listener is not live after arm"
+wait_for_lines "$READY_MARK" 1 || fail "the late listener never ran its source command"
+touch "$READY_RELEASE"
+PATH="$LATE/bin:$PATH" FM_HOME="$LATE/home" \
+  "$ROOT/bin/fm-procevent-lavish.sh" retire "$LATE/board.html" >/dev/null 2>&1 || true
+pass "arm reports a listener that claimed after the confirm window as armed and leaves it live"
+
+NEVER="$TMP_ROOT/never-arm"
+arm_late_claim "$NEVER" never
+never_id=$(cat "$NEVER/id")
+[ "$(cat "$NEVER/rc")" -ne 0 ] || fail "arm reported success for a listener that never claimed"
+assert_not_contains "$(cat "$NEVER/arm.out")" "armed:" \
+  "arm printed armed for a listener that never claimed"
+assert_absent "$NEVER/home/state/procevent/$never_id.source" \
+  "arm left a never-started source registered instead of retiring it"
+[ ! -s "$READY_MARK" ] || fail "a listener with no claim ran its source command"
+pass "arm still fails and retires a source whose listener never claims"
+
 # A worker re-arms as soon as its round is published, which can land while the
 # earlier generation's runner is still finishing and holding the claim. Once
 # that claim is released inside the confirm window, arm must start the new

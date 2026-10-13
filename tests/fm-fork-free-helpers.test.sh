@@ -420,6 +420,267 @@ SH
   pass "fm_backlog_data_absolute_to resolves a data directory as cd and pwd -P do, into any variable"
 }
 
+test_procevent_path_helpers_match_the_subshell_forms() {
+  local script="$TMP_ROOT/pe-paths.sh"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+# The replaced bodies, called through $(...) as every caller did.
+ref_root() { printf '%s\n' "${FM_PROCEVENT_CLAIM_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/procevent-claims}"; }
+check() {  # <label>
+  local got want id
+  fm_procevent_claim_root_to got; want=$(ref_root)
+  [ "$got" = "$want" ] || printf '%s claim root: helper %q, subshell %q\n' "$1" "$got" "$want"
+  for id in src lavish-0c318af7713a38f9 'a b' $'x\n'; do
+    fm_procevent_claim_path_to got "$id"; want=$(printf '%s/%s.claim\n' "$(ref_root)" "$id")
+    [ "$got" = "$want" ] || printf '%s claim %q: helper %q, subshell %q\n' "$1" "$id" "$got" "$want"
+    [ "$(fm_procevent_claim_path "$id")" = "$want" ] || printf '%s claim printer %q differs\n' "$1" "$id"
+    fm_procevent_source_lock_path_to got "$id"; want=$(printf '%s/%s.lock\n' "$(ref_root)" "$id")
+    [ "$got" = "$want" ] || printf '%s lock %q: helper %q, subshell %q\n' "$1" "$id" "$got" "$want"
+    [ "$(fm_procevent_source_lock_path "$id")" = "$want" ] || printf '%s lock printer %q differs\n' "$1" "$id"
+  done
+}
+unset FM_PROCEVENT_CLAIM_ROOT XDG_STATE_HOME
+check default
+XDG_STATE_HOME='/x/state home'; check xdg
+for FM_PROCEVENT_CLAIM_ROOT in /claims '/c l*a?ims' $'/claims\n' $'/claims\n\n' $'/a\nb' $'/caf\xc3\xa9' / \
+  $'/claims\r' $'/claims\r\n' $'/claims\r\r\n' $'/claims\n\r\n' $'/claims\r\n\n'; do
+  check "root=$(printf %q "$FM_PROCEVENT_CLAIM_ROOT")"
+done
+for state in /s '/s p' '' $'/s\n' $'/caf\xc3\xa9'; do
+  fm_procevent_registry_dir_to got "$state"; want=$(printf '%s\n' "$state/procevent")
+  [ "$got" = "$want" ] || printf 'registry %q: helper %q, subshell %q\n' "$state" "$got" "$want"
+done
+SH
+  run_everywhere "process-event path helpers" "$script"
+  pass "process-event path helpers assign the same paths their \$(...) forms printed"
+}
+
+test_procevent_registration_reads_match_the_sed_pipelines() {
+  local script="$TMP_ROOT/pe-reads.sh" fns="$TMP_ROOT/pe-reads-fns.sh" reg="$TMP_ROOT/pe-reads-reg"
+  rm -rf "$reg"; mkdir -p "$reg/adir.source"
+  printf 'adapter=lavish\nkind=task-owned\nowner_task=fm-x\nargc=2\nargv:\n/bin/poll\n/a b/board.html\n' > "$reg/plain.source"
+  printf 'adapter=one\nadapter=two\nkind=\nargc=03\nargv:\na\n\nc\nd\n' > "$reg/dup.source"
+  printf 'kind=x\nargc=1\nargv:\nadapter=late\nargc=9\nargv:\n' > "$reg/inargv.source"
+  printf 'adapter=adapter=x\n adapter=no\nadapterx=no\nargc=2\nargv:\nlast\nunterminated' > "$reg/partial.source"
+  printf 'adapter=cr\r\nargc=1\r\nargv:\r\nx\r\n' > "$reg/crlf.source"
+  printf 'adapter=two\r\r\nkind=a\rb\nargc=2\nargv:\nx\r\r\ny\r' > "$reg/crs.source"
+  printf 'adapter=end\r' > "$reg/crend.source"
+  printf 'adapter=three\r\r\r\nkind=\r\r\nargc=1\r\r\nargv:\r\nx\r\r\r\n' > "$reg/cr3.source"
+  printf 'argv:\nx\nargc=1' > "$reg/argcpartial.source"
+  printf 'adapter=lone' > "$reg/lone.source"
+  printf 'adapter=u\nowner_task=caf\303\251\nargc=1\nargv:\n\303\274 *?[a]\n' > "$reg/utf8.source"
+  printf 'adapter=n\nargc=1\nnoargv\nx\n' > "$reg/noargv.source"
+  printf 'adapter=n\nargc=x1\nargv:\nx\n' > "$reg/badargc.source"
+  printf 'adapter=n\nargc=5\nargv:\nx\n' > "$reg/short.source"
+  printf 'adapter=n\nargc=0\nargv:\n' > "$reg/zero.source"
+  : > "$reg/empty.source"
+  ln -s plain.source "$reg/link.source" 2>/dev/null || true
+  awk '/^source_file_to\(\)/ { print; next }
+    /^(source_field_to|read_adapter_to|read_argv)\(\) \{/, /^\}/' "$ROOT/bin/fm-procevent.sh" > "$fns"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+. "$2"
+REG=$3
+# The replaced readers, verbatim in behavior.
+ref_field() { sed -n "s/^$2=//p" "$REG/$1.source" 2>/dev/null | head -1; }
+ref_adapter() {
+  local f="$REG/$1.source"
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  sed -n 's/^adapter=//p' "$f" | head -1
+}
+ref_argv() {
+  local f="$REG/$1.source" n
+  REF=()
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  n=$(sed -n 's/^argc=//p' "$f" | head -1)
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  local i=0 line
+  while IFS= read -r line; do
+    i=$((i + 1))
+    [ "$i" -le "$n" ] && REF+=("$line")
+  done < <(sed -n '/^argv:$/,$p' "$f" | tail -n +2)
+  [ "${#REF[@]}" -eq "$n" ]
+}
+for id in plain dup inargv partial crlf crs crend cr3 argcpartial lone utf8 noargv badargc short zero empty link adir missing; do
+  for field in adapter kind owner_task argc; do
+    source_field_to got "$id" "$field"; want=$(ref_field "$id" "$field")
+    [ "$got" = "$want" ] || printf '%s %s: helper %q, sed %q\n' "$id" "$field" "$got" "$want"
+  done
+  rc=0; read_adapter_to got "$id" || rc=$?
+  wrc=0; want=$(ref_adapter "$id") || wrc=$?
+  [ "$rc:$got" = "$wrc:$want" ] || printf '%s adapter: helper %s:%q, sed %s:%q\n' "$id" "$rc" "$got" "$wrc" "$want"
+  rc=0; read_argv "$id" || rc=$?
+  wrc=0; ref_argv "$id" || wrc=$?
+  got=$(printf '%q ' "$rc" "${ARGV[@]}"); want=$(printf '%q ' "$wrc" "${REF[@]}")
+  [ "$got" = "$want" ] || printf '%s argv: helper %s, sed %s\n' "$id" "$got" "$want"
+done
+SH
+  run_everywhere "registration reads" "$script" "$fns" "$reg"
+  pass "registration field, adapter and argv reads match the sed pipelines they replace"
+}
+
+test_procevent_extension_owner_line_matches_sed() {
+  local script="$TMP_ROOT/pe-owner.sh" state="$TMP_ROOT/pe-owner-state"
+  rm -rf "$state"; mkdir -p "$state/procevent"
+  printf 'adapter=x\nowner=extension\n' > "$state/procevent/two.source"
+  printf 'adapter=x\nowner=extension' > "$state/procevent/unterminated.source"
+  printf 'owner=extension\n' > "$state/procevent/first.source"
+  printf 'owner=extension' > "$state/procevent/onlypartial.source"
+  printf 'adapter=x\nowner=extension \n' > "$state/procevent/space.source"
+  printf 'adapter=x\n\nowner=extension\n' > "$state/procevent/third.source"
+  printf 'adapter=x\r\nowner=extension\r\n' > "$state/procevent/crlf.source"
+  printf 'adapter=x\nowner=extension\r' > "$state/procevent/crend.source"
+  printf 'adapter=x\nowner=extension\r\r\n' > "$state/procevent/cr2.source"
+  printf 'adapter=x\nowner=extension\r\r\r\n' > "$state/procevent/cr3.source"
+  : > "$state/procevent/empty.source"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+for id in two unterminated first onlypartial space third crlf crend cr2 cr3 empty; do
+  # 1 means "not an extension owner", decided by line 2 alone.
+  want=other
+  [ "$(sed -n 2p "$2/procevent/$id.source")" = owner=extension ] || want=1
+  rc=0; fm_procevent_extension_registration_load_locked "$2" "$id" || rc=$?
+  got=other; [ "$rc" -ne 1 ] || got=1
+  [ "$got" = "$want" ] || printf '%s: loader %s, sed -n 2p %s\n' "$id" "$rc" "$want"
+done
+SH
+  run_everywhere "extension owner line" "$script" "$state"
+  pass "the extension owner check reads line 2 exactly as sed -n 2p did"
+}
+
+test_procevent_identity_reads_match_separate_stats() {
+  local script="$TMP_ROOT/pe-stat.sh" dir="$TMP_ROOT/pe-stat"
+  rm -rf "$dir"; mkdir -p "$dir/state" "$dir/sub dir"
+  chmod 700 "$dir/state"
+  : > "$dir/file"
+  ln -s file "$dir/link" 2>/dev/null || true
+  cat > "$script" <<'SH'
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+d=$2
+if [ "$(uname)" = Darwin ]; then
+  st() { /usr/bin/stat -f "$1" "$2" 2>/dev/null; }; DEV=%d INO=%i MODE=%Lp UID_=%u
+else
+  st() { stat -c "$1" "$2" 2>/dev/null; }; DEV=%d INO=%i MODE=%a UID_=%u
+fi
+for p in "$d/file" "$d/state" "$d/sub dir" "$d/link" "$d/missing" /; do
+  rc=0; got=$(fm_pr_file_identity "$p") || rc=$?
+  wrc=0; want=$(device=$(st $DEV "$p") || exit 1; inode=$(st $INO "$p") || exit 1
+    [ -n "$device" ] && [ -n "$inode" ] || exit 1; printf '%s:%s\n' "$device" "$inode") || wrc=$?
+  [ "$rc:$got" = "$wrc:$want" ] || printf 'identity %q: helper %s:%q, stats %s:%q\n' "$p" "$rc" "$got" "$wrc" "$want"
+  rc=0; fm_procevent_directory_owned_by_current_user "$p" || rc=$?
+  wrc=0; [ "$(st $UID_ "$p")" = "$(id -u)" ] || wrc=$?
+  [ "$rc" = "$wrc" ] || printf 'owned %q: helper %s, id -u %s\n' "$p" "$rc" "$wrc"
+done
+canonical=$(cd -P -- "$d/state" && pwd -P)
+got=$(fm_procevent_claim_state_root_identity "$d/state") || printf 'state root identity failed\n'
+want=$(printf '%s\t%s\t%s\t%s\t%s\n' "$canonical" "$(st $DEV "$canonical")" "$(st $INO "$canonical")" "$(id -u)" "$(st $MODE "$canonical")")
+[ "$got" = "$want" ] || printf 'state root identity: helper %q, stats %q\n' "$got" "$want"
+SH
+  run_everywhere "identity stats" "$script" "$dir"
+  pass "file and state-root identities read the same values one stat and \$EUID give"
+}
+
+test_procevent_path_normalize_matches_the_subshell_join() {
+  local script="$TMP_ROOT/pe-norm.sh"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+ref() {  # the replaced body, ending in the $(IFS=/; printf) join
+  local path=${1-} part
+  local -a parts normalized=()
+  [ -n "$path" ] || return 1
+  case "$path" in /*) ;; *) path="$(pwd -P)/$path" ;; esac
+  IFS=/ read -r -a parts <<< "$path"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ''|.) ;;
+      ..) [ "${#normalized[@]}" -gt 0 ] && unset 'normalized[${#normalized[@]}-1]' ;;
+      *) normalized+=("$part") ;;
+    esac
+  done
+  printf '/%s\n' "$(IFS=/; printf '%s' "${normalized[*]}")"
+}
+for p in / // /a /a/ //a//b/ /a/./b/.. /a/../.. /.. a a/b ./a ../x '/a b/c d' '/*/?' $'/a\nb' $'/a/b\n' \
+  $'/caf\xc3\xa9/\xc3\xbc' '/x/-y' ''; do
+  rc=0; got=$(fm_procevent_path_normalize "$p") || rc=$?
+  wrc=0; want=$(ref "$p") || wrc=$?
+  [ "$rc:$got" = "$wrc:$want" ] || printf 'normalize %q: helper %s:%q, subshell %s:%q\n' "$p" "$rc" "$got" "$wrc" "$want"
+done
+fm_procevent_path_normalize /a/b >/dev/null
+[ "$IFS" = $' \t\n' ] || printf 'normalize leaked IFS %q\n' "$IFS"
+SH
+  run_everywhere "path normalize" "$script"
+  pass "fm_procevent_path_normalize joins exactly as its \$(IFS=/; printf) form did"
+}
+
+test_source_time_lib_dirs_match_dirname() {
+  local script="$TMP_ROOT/libdirs.sh" spelling
+  cat > "$script" <<'SH'
+root=$1 spelling=$2 dir=$3
+cd "$dir" || exit 1
+want=$(cd "$(dirname "$spelling")" && pwd)
+. "${spelling%fm-task-inbox-lib.sh}fm-backend.sh"
+[ "$FM_BACKEND_LIB_DIR" = "$want" ] || printf 'backend lib dir beside %q: %q, dirname %q\n' "$spelling" "$FM_BACKEND_LIB_DIR" "$want"
+. "$spelling"
+[ "$_FM_TASK_INBOX_LIB_DIR" = "$want" ] || printf 'task inbox lib dir via %q: %q, dirname %q\n' "$spelling" "$_FM_TASK_INBOX_LIB_DIR" "$want"
+[ "$FM_BACKEND_LIB_DIR" = "$want" ] || printf 'backend lib dir via %q: %q, dirname %q\n' "$spelling" "$FM_BACKEND_LIB_DIR" "$want"
+SH
+  for spelling in "$ROOT/bin/fm-task-inbox-lib.sh" "$ROOT//bin//fm-task-inbox-lib.sh" \
+    bin/fm-task-inbox-lib.sh ./bin/fm-task-inbox-lib.sh; do
+    run_everywhere "lib dirs ($spelling)" "$script" "$spelling" "$ROOT"
+  done
+  run_everywhere "lib dirs (no slash)" "$script" fm-task-inbox-lib.sh "$ROOT/bin"
+  pass "source-time library directories resolve as cd \"\$(dirname ...)\" did, from every spelling"
+}
+
+test_existing_dirs_skip_mkdir_and_uname_is_read_once() {
+  local script="$TMP_ROOT/noexec.sh" shim="$TMP_ROOT/noexec-shim" log="$TMP_ROOT/noexec.log" cmd
+  mkdir -p "$shim" "$TMP_ROOT/noexec-state" "$TMP_ROOT/noexec-claims"
+  chmod 700 "$TMP_ROOT/noexec-state"
+  for cmd in mkdir uname id; do
+    cat > "$shim/$cmd" <<SH
+#!/bin/sh
+printf '$cmd\n' >> "$log"
+exec $(command -v "$cmd") "\$@"
+SH
+    chmod +x "$shim/$cmd"
+  done
+  cat > "$script" <<'SH'
+PATH="$2:$PATH"
+: > "$3"
+FM_STATE_OVERRIDE=$4 FM_PROCEVENT_CLAIM_ROOT=$5
+. "$1/bin/fm-pr-lib.sh"
+. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-procevent-lib.sh"
+fm_procevent_source_lock_acquire src || printf 'lock not acquired\n'
+fm_procevent_source_lock_release src
+fm_procevent_source_lock_try_acquire src || printf 'try lock not acquired\n'
+fm_procevent_source_lock_release src
+for _ in 1 2 3; do
+  fm_pr_file_mode "$STATE" >/dev/null; fm_pr_file_identity "$STATE" >/dev/null
+  fm_procevent_directory_owned_by_current_user "$STATE" || printf 'state not owned\n'
+done
+fm_procevent_claim_state_root_identity "$STATE" >/dev/null || printf 'no state identity\n'
+calls=$(sort "$3" | uniq -c | awk '{printf "%s=%s ", $2, $1}')
+[ "$calls" = "uname=1 " ] || printf 'existing directories ran: %s(want only the one source-time uname)\n' "$calls"
+FM_PROCEVENT_CLAIM_ROOT=$5/new
+fm_procevent_source_lock_acquire src || printf 'lock under a new root not acquired\n'
+fm_procevent_source_lock_release src
+[ -d "$5/new" ] || printf 'a missing claim root was not created\n'
+SH
+  run_everywhere "no exec on existing dirs" "$script" "$shim" "$log" "$TMP_ROOT/noexec-state" "$TMP_ROOT/noexec-claims"
+  pass "existing state and claim roots skip mkdir, and stat helpers reuse the one source-time uname"
+}
+
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
@@ -434,4 +695,11 @@ else
   test_helpers_assign_any_output_variable_name
   test_spawn_shell_quote_round_trips_and_never_forks
   test_backlog_data_absolute_to_resolves_like_cd_and_pwd
+  test_procevent_path_helpers_match_the_subshell_forms
+  test_procevent_registration_reads_match_the_sed_pipelines
+  test_procevent_extension_owner_line_matches_sed
+  test_procevent_identity_reads_match_separate_stats
+  test_procevent_path_normalize_matches_the_subshell_join
+  test_source_time_lib_dirs_match_dirname
+  test_existing_dirs_skip_mkdir_and_uname_is_read_once
 fi
