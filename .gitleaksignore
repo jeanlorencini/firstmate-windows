@@ -1,4 +1,4 @@
 # Known fake test fixtures, allowlisted by gitleaks fingerprint (commit:file:rule:line).
 # Never add a real secret here; rotate it instead.
-cdb084455423d90b214515a806fbf561b26cb1b0:platform/windows/lavish-session.test.sh:generic-api-key:31
+e6e80125323805e56150ed9c902084ba2ee347f9:platform/windows/lavish-session.test.sh:generic-api-key:31
 69d660ad6167271daf09e8c5521581c03cb9a4f8:tests/fm-dispatch-resolve.test.sh:generic-api-key:183
