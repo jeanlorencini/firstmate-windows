@@ -1,7 +1,3 @@
-  # The guard applies once the default branch has the gate; the commit that
-  # first adds it cannot be compared against a gate that is not there yet.
-  changed=
-  ! git cat-file -e "$1:bin/fm-lint-secrets.sh" 2>/dev/null || changed=$(git diff --name-only "$1..HEAD" -- ) || changed=
 #!/usr/bin/env bash
 # fm-lint-secrets.sh - owner of firstmate's secret scan.
 #
@@ -34,7 +30,7 @@ case "${1:-}" in
     exit 0
     ;;
   --help|-h)
-    sed -n '2,26{s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
+    sed -n '2,22{s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
     exit 0
     ;;
 esac
