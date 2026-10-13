@@ -3909,7 +3909,7 @@ test_a_retained_refusal_repeats_its_wake_rather_than_a_new_one() {
   pass "a refusal whose event was retained repeats its wake instead of a new one"
 }
 
-# CI's stock macOS Bash lane sets FM_TEST_ONLY to run just the bash-3.2 empty-lock
+# The removed stock macOS Bash CI lane set FM_TEST_ONLY to run just the bash-3.2 empty-lock
 # register regression. The rest of this file is not a 3.2 snapshot suite.
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
