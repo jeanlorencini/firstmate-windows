@@ -2036,6 +2036,45 @@ test_secret_scan_flags_only_the_commits_a_branch_adds() {
   pass "fm-lint-secrets.sh scans the commits a branch adds and honors fingerprint allowlists"
 }
 
+# The commit that first adds the gate is scanned but not blocked by the
+# allowlist guard, because the default branch has no gate to compare against.
+test_secret_scan_bootstrap_adds_the_gate_without_tripping_its_own_guard() {
+  local tmp base out rc
+  if ! command -v gitleaks >/dev/null 2>&1 \
+    || [ "$(gitleaks version 2>/dev/null)" != "$("$ROOT/bin/fm-lint-secrets.sh" --required-version)" ]; then
+    pass "SKIP (pinned gitleaks not resolved): secret-scan bootstrap"
+    return
+  fi
+  tmp=$(fm_test_tmproot fm-lint-gitleaks-bootstrap)
+  mkdir -p "$tmp/repo"
+  (
+    cd "$tmp/repo" || exit 1
+    git init -q .
+    printf 'clean\n' > readme.txt
+    git add -A
+    git -c user.name=t -c user.email=t@example.invalid commit -qm base
+  ) || fail "could not build the bootstrap fixture repo"
+  base=$(git -C "$tmp/repo" rev-parse HEAD)
+  mkdir -p "$tmp/repo/bin"
+  cp "$ROOT/bin/fm-lint-secrets.sh" "$tmp/repo/bin/"
+  printf '# fingerprints\n' > "$tmp/repo/.gitleaksignore"
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm "add gate"
+
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "the commit adding the gate tripped its own allowlist guard"$'\n'"$out"
+
+  # The scan still runs: a token added alongside the gate still fails.
+  printf 'token=%s\n' "$(fm_lint_fake_token)" > "$tmp/repo/leak.txt"
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm leak
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a token added with the gate passed the bootstrap scan"
+  pass "fm-lint-secrets.sh skips only the allowlist guard while the default branch has no gate"
+}
+
 test_lint_runs_the_secret_scan_and_explicit_paths_skip_it() {
   local tmp fakebin out rc
   tmp=$(fm_test_tmproot fm-lint-secret-wiring)
@@ -2106,4 +2145,5 @@ test_changed_mode_hides_cross_file_codes_that_ci_still_sees
 test_local_exclusion_list_covers_every_no_external_sources_code
 test_missing_gitleaks_fails_the_secret_scan
 test_secret_scan_flags_only_the_commits_a_branch_adds
+test_secret_scan_bootstrap_adds_the_gate_without_tripping_its_own_guard
 test_lint_runs_the_secret_scan_and_explicit_paths_skip_it

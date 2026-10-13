@@ -1,3 +1,7 @@
+  # The guard applies once the default branch has the gate; the commit that
+  # first adds it cannot be compared against a gate that is not there yet.
+  changed=
+  ! git cat-file -e "$1:bin/fm-lint-secrets.sh" 2>/dev/null || changed=$(git diff --name-only "$1..HEAD" -- ) || changed=
 #!/usr/bin/env bash
 # fm-lint-secrets.sh - owner of firstmate's secret scan.
 #
@@ -12,7 +16,9 @@
 # without one (CI, main, merge-base-less) it covers the whole history.
 # With a merge-base, a change to .gitleaksignore, a gitleaks config file, or this script in
 # that range also fails, because an automated allowlist edit must not get a
-# finding through; the captain approves such a change.
+# finding through; the captain approves such a change. The guard applies only
+# when the merge-base already contains this script, so the commit that first
+# adds the gate is scanned but not blocked by it.
 #
 # Usage:
 #   fm-lint-secrets.sh [<merge-base>]
@@ -28,7 +34,7 @@ case "${1:-}" in
     exit 0
     ;;
   --help|-h)
-    sed -n '2,20{s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
+    sed -n '2,26{s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
     exit 0
     ;;
 esac
@@ -53,7 +59,11 @@ if [ -n "${1:-}" ]; then
   log_opts=(--log-opts "$1..HEAD")
   # An allowlist, config, or gate-script edit in the scanned range could silence a real
   # finding, so it fails the lint until the captain approves it.
-  changed=$(git diff --name-only "$1..HEAD" -- .gitleaksignore .gitleaks.toml gitleaks.toml bin/fm-lint-secrets.sh) || changed=
+  # It applies once the base already has this gate; the commit that first adds
+  # the gate cannot be compared against a gate that is not there yet.
+  changed=
+  ! git cat-file -e "$1:bin/fm-lint-secrets.sh" 2>/dev/null \
+    || changed=$(git diff --name-only "$1..HEAD" -- .gitleaksignore .gitleaks.toml gitleaks.toml bin/fm-lint-secrets.sh) || changed=
   if [ -n "$changed" ]; then
     printf 'fm-lint-secrets.sh: this branch changes the gitleaks allowlist, config, or this gate script:\n%s\n' "$changed" >&2
     printf 'An allowlist change needs the captain to approve this lint finding. Do not edit .gitleaksignore, gitleaks config, or bin/fm-lint-secrets.sh, or rewrite commits to silence gitleaks; escalate instead.\n' >&2
