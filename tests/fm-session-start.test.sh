@@ -3004,6 +3004,12 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+# FM_TEST_ONLY=<test_function> runs that one case alone; unset runs the whole file.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit 0
+fi
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path

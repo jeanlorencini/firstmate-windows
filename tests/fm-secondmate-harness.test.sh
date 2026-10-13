@@ -2708,6 +2708,12 @@ SH
   pass "B25 spawn quarantines stale rereads without blocking relaunch"
 }
 
+# FM_TEST_ONLY=<test_function> runs that one case alone; unset runs the whole file.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit 0
+fi
+
 test_harness_resolution
 test_cursor_marker_detection
 test_secondmate_model_effort_tokens

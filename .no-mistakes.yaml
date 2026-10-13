@@ -41,6 +41,10 @@ commands:
 # The evidence is not committed to the feature or default branch.
 test:
   instructions: |
+    Keep every local check small and bounded; remote CI owns whole test files.
+    Run a single case with FM_TEST_ONLY=<test_function> bash tests/<file>.test.sh when the file supports it.
+    Never run a whole tests/*.test.sh whose duration hint in bin/fm-test-run.sh (portable_serial_weight_hints or portable_parallel_weight_hints) is above 60000 ms, and wrap every local test command in timeout 300.
+    On a Windows host each process costs about fifty times a Linux one and some files do not complete natively; when the scenario lives only in such a whole file, or the property is only observable across a whole file (for example flakiness under load), report it untested with CI as the authority instead of waiting.
     Run live Herdr scenarios only through bin/fm-herdr-lab.sh with a named non-default fm-lab-* session, following that helper's prepare, provision, run, and teardown contract exactly.
     Never touch the live default Herdr session or fleet panes.
     Prefer a throwaway lab for spawn, long-launch, and Claude-path proofs, and tear it down in the same evidence turn.
