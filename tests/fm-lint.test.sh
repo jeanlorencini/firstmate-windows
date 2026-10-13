@@ -2166,6 +2166,7 @@ test_lint_runs_the_secret_scan_and_explicit_paths_skip_it() {
 
 # FM_TEST_ONLY=<test_function> runs that one case alone; unset runs the whole file.
 if [ -n "${FM_TEST_ONLY:-}" ]; then
+  declare -F "$FM_TEST_ONLY" >/dev/null || fail "unknown test function: $FM_TEST_ONLY"
   "$FM_TEST_ONLY"
   exit 0
 fi
