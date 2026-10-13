@@ -2036,6 +2036,34 @@ test_secret_scan_flags_only_the_commits_a_branch_adds() {
   pass "fm-lint-secrets.sh scans the commits a branch adds and honors fingerprint allowlists"
 }
 
+# Without a merge-base the scan covers the history HEAD reaches, so a leak that
+# lives only on another branch does not fail the commit being linted.
+test_secret_scan_without_a_base_ignores_other_refs() {
+  local tmp out rc
+  if ! command -v gitleaks >/dev/null 2>&1 \
+    || [ "$(gitleaks version 2>/dev/null)" != "$("$ROOT/bin/fm-lint-secrets.sh" --required-version)" ]; then
+    pass "SKIP (pinned gitleaks not resolved): secret-scan whole-history scope"
+    return
+  fi
+  tmp=$(fm_test_tmproot fm-lint-gitleaks-refs)
+  fm_lint_secrets_repo "$tmp"
+  git -C "$tmp/repo" checkout -qb other
+  printf 'token=%s\n' "$(fm_lint_fake_token)" > "$tmp/repo/leak.txt"
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm leak
+  git -C "$tmp/repo" checkout -q -
+
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a leak only on another branch failed the whole-history scan"$'\n'"$out"
+
+  git -C "$tmp/repo" merge -q --ff-only other
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a leak reachable from HEAD passed the whole-history scan"
+  pass "fm-lint-secrets.sh without a merge-base scans only the history HEAD reaches"
+}
+
 # The commit that first adds the gate is scanned but not blocked by the
 # allowlist guard, because the default branch has no gate to compare against.
 test_secret_scan_bootstrap_adds_the_gate_without_tripping_its_own_guard() {
@@ -2145,5 +2173,6 @@ test_changed_mode_hides_cross_file_codes_that_ci_still_sees
 test_local_exclusion_list_covers_every_no_external_sources_code
 test_missing_gitleaks_fails_the_secret_scan
 test_secret_scan_flags_only_the_commits_a_branch_adds
+test_secret_scan_without_a_base_ignores_other_refs
 test_secret_scan_bootstrap_adds_the_gate_without_tripping_its_own_guard
 test_lint_runs_the_secret_scan_and_explicit_paths_skip_it

@@ -9,7 +9,8 @@
 # fingerprint in the committed .gitleaksignore, never by disabling rules.
 #
 # With a merge-base the scan covers only the commits it adds (<base>..HEAD);
-# without one (CI, main, merge-base-less) it covers the whole history.
+# without one (CI, main, merge-base-less) it covers the whole history reachable
+# from HEAD, never other branches or remote refs.
 # With a merge-base, a change to .gitleaksignore, a gitleaks config file, or this script in
 # that range also fails, because an automated allowlist edit must not get a
 # finding through; the captain approves such a change. The guard applies only
@@ -30,7 +31,7 @@ case "${1:-}" in
     exit 0
     ;;
   --help|-h)
-    sed -n '2,22{s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
+    sed -n '2,23{s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
     exit 0
     ;;
 esac
@@ -50,7 +51,7 @@ actual=$(gitleaks version 2>/dev/null | tr -d '[:space:]') || actual=
 
 cd "$ROOT"
 rc=0
-log_opts=()
+log_opts=(--log-opts HEAD)
 if [ -n "${1:-}" ]; then
   log_opts=(--log-opts "$1..HEAD")
   # An allowlist, config, or gate-script edit in the scanned range could silence a real
@@ -66,5 +67,5 @@ if [ -n "${1:-}" ]; then
     rc=1
   fi
 fi
-gitleaks git --no-banner --redact ${log_opts[@]+"${log_opts[@]}"} . || rc=1
+gitleaks git --no-banner --redact "${log_opts[@]}" . || rc=1
 exit "$rc"
