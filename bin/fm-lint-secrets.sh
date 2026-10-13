@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# fm-lint-secrets.sh - owner of firstmate's secret scan.
+#
+# Runs pinned gitleaks over git history so a committed password or key fails
+# the local and no-mistakes lint lane before it is pushed. bin/fm-lint.sh
+# invokes this owner on its default (no explicit-path) path, which CI and
+# commands.lint both use. A missing or wrong-version gitleaks fails the run;
+# the scan is never skipped. Known fake fixtures are allowlisted by
+# fingerprint in the committed .gitleaksignore, never by disabling rules.
+#
+# With a merge-base the scan covers only the commits it adds (<base>..HEAD);
+# without one (CI, main, merge-base-less) it covers the whole history.
+#
+# Usage:
+#   fm-lint-secrets.sh [<merge-base>]
+#   fm-lint-secrets.sh --required-version
+#   fm-lint-secrets.sh --help
+set -eu
+
+REQUIRED_GITLEAKS=8.30.1
+
+case "${1:-}" in
+  --required-version)
+    printf '%s\n' "$REQUIRED_GITLEAKS"
+    exit 0
+    ;;
+  --help|-h)
+    sed -n '2,15{s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
+    exit 0
+    ;;
+esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+command -v gitleaks >/dev/null 2>&1 || {
+  printf 'fm-lint-secrets.sh: gitleaks %s is required and was not found on PATH (bin/fm-install-gitleaks.sh installs it).\n' \
+    "$REQUIRED_GITLEAKS" >&2
+  exit 1
+}
+actual=$(gitleaks version 2>/dev/null | tr -d '[:space:]') || actual=
+[ "${actual#v}" = "$REQUIRED_GITLEAKS" ] || {
+  printf 'fm-lint-secrets.sh: gitleaks %s is required, found %s.\n' "$REQUIRED_GITLEAKS" "${actual:-unknown}" >&2
+  exit 1
+}
+
+log_opts=()
+[ -z "${1:-}" ] || log_opts=(--log-opts "$1..HEAD")
+cd "$ROOT"
+gitleaks git --no-banner --redact ${log_opts[@]+"${log_opts[@]}"} .
