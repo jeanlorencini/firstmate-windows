@@ -47,3 +47,10 @@ test:
     Ship or scout briefs that will drive Herdr lifecycle still require --herdr-lab at scaffold time; these Test-agent instructions are not a substitute for that brief flag.
   evidence:
     store_in_repo: true
+
+# Instructions for the lint step's fix agent about the secret scan in
+# bin/fm-lint-secrets.sh (the same text is printed by the failing lint).
+lint:
+  instructions: |
+    When the gitleaks secret scan fails, never edit .gitleaksignore or any gitleaks config, and never rewrite or drop commits to silence gitleaks.
+    Escalate the finding instead; an allowlist change needs the captain to approve that lint finding.
