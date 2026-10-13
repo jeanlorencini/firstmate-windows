@@ -10,7 +10,7 @@
 #
 # With a merge-base the scan covers only the commits it adds (<base>..HEAD);
 # without one (CI, main, merge-base-less) it covers the whole history.
-# With a merge-base, a change to .gitleaksignore or a gitleaks config file in
+# With a merge-base, a change to .gitleaksignore, a gitleaks config file, or this script in
 # that range also fails, because an automated allowlist edit must not get a
 # finding through; the captain approves such a change.
 #
@@ -51,12 +51,12 @@ rc=0
 log_opts=()
 if [ -n "${1:-}" ]; then
   log_opts=(--log-opts "$1..HEAD")
-  # An allowlist or config edit in the scanned range could silence a real
+  # An allowlist, config, or gate-script edit in the scanned range could silence a real
   # finding, so it fails the lint until the captain approves it.
-  changed=$(git diff --name-only "$1..HEAD" -- .gitleaksignore .gitleaks.toml gitleaks.toml) || changed=
+  changed=$(git diff --name-only "$1..HEAD" -- .gitleaksignore .gitleaks.toml gitleaks.toml bin/fm-lint-secrets.sh) || changed=
   if [ -n "$changed" ]; then
-    printf 'fm-lint-secrets.sh: this branch changes the gitleaks allowlist or config:\n%s\n' "$changed" >&2
-    printf 'An allowlist change needs the captain to approve this lint finding. Do not edit .gitleaksignore, change gitleaks config, or rewrite commits to silence gitleaks; escalate instead.\n' >&2
+    printf 'fm-lint-secrets.sh: this branch changes the gitleaks allowlist, config, or this gate script:\n%s\n' "$changed" >&2
+    printf 'An allowlist change needs the captain to approve this lint finding. Do not edit .gitleaksignore, gitleaks config, or bin/fm-lint-secrets.sh, or rewrite commits to silence gitleaks; escalate instead.\n' >&2
     rc=1
   fi
 fi

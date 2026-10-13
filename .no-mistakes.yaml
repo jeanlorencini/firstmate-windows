@@ -52,5 +52,5 @@ test:
 # bin/fm-lint-secrets.sh (the same text is printed by the failing lint).
 lint:
   instructions: |
-    When the gitleaks secret scan fails, never edit .gitleaksignore or any gitleaks config, and never rewrite or drop commits to silence gitleaks.
+    When the gitleaks secret scan fails, never edit .gitleaksignore, any gitleaks config, or the gate script bin/fm-lint-secrets.sh, and never rewrite or drop commits to silence gitleaks.
     Escalate the finding instead; an allowlist change needs the captain to approve that lint finding.

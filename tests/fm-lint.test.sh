@@ -2023,6 +2023,16 @@ test_secret_scan_flags_only_the_commits_a_branch_adds() {
   [ "$rc" -ne 0 ] || fail "an allowlist change inside the scanned range passed the scan"
   assert_contains "$out" "needs the captain to approve this lint finding" \
     "the allowlist-change failure did not say the captain must approve it"
+
+  # Editing the gate script in the scanned range is guarded the same way.
+  base=$(git -C "$tmp/repo" rev-parse HEAD)
+  printf '# edited\n' >> "$tmp/repo/bin/fm-lint-secrets.sh"
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm "edit gate"
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an edit to the gate script inside the scanned range passed the scan"
+  assert_contains "$out" "bin/fm-lint-secrets.sh" "the failure did not name the edited gate script"
   pass "fm-lint-secrets.sh scans the commits a branch adds and honors fingerprint allowlists"
 }
 
