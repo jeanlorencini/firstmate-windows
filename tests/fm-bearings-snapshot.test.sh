@@ -2602,7 +2602,8 @@ EOF
   fm_write_meta "$home/state/long-ship.meta" \
     "window=firstmate:fm-long-ship" "worktree=$home/projects/main-wt" "project=firstmate" \
     "harness=claude" "kind=ship" "mode=no-mistakes"
-  record_claude_state "$home/state" long-ship busy
+  # Idle keeps the busy-hook detail out, so doing comes from the long status line.
+  record_claude_state "$home/state" long-ship idle
   printf 'working: %s\n' "$long_doing" > "$home/state/long-ship.status"
 
   fakebin=$(make_fakebin "$home")
