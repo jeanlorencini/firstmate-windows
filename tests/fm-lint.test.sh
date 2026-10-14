@@ -280,6 +280,9 @@ case "$*" in
   "rev-parse --verify -q main")
     [ "${FM_TEST_GIT_HAS_MAIN:-1}" = 1 ] && exit 0 || exit 1
     ;;
+  "rev-parse --verify -q "*"^{commit}")
+    exit 0
+    ;;
   "merge-base "*)
     if [ "${FM_TEST_GIT_MERGE_BASE_OK:-1}" = 1 ]; then
       printf '%s\n' "${FM_TEST_GIT_MERGE_BASE:-fakebase123}"
@@ -1999,6 +2002,23 @@ test_missing_gitleaks_fails_the_secret_scan() {
   pass "fm-lint-secrets.sh fails instead of skipping when gitleaks is missing"
 }
 
+test_secret_scan_fails_when_git_cannot_resolve_the_range() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-gitleaks-badrange)
+  fm_lint_secrets_repo "$tmp"
+  mkdir -p "$tmp/fakebin"
+  fm_lint_stub_gitleaks "$tmp/fakebin"
+  rc=0
+  out=$(PATH="$tmp/fakebin:$PATH" "$tmp/repo/bin/fm-lint-secrets.sh" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "the secret scan passed although git could not resolve the merge-base"
+  assert_contains "$out" "git cannot resolve" "the unresolvable-range failure did not say why"
+  rc=0
+  out=$(PATH="$tmp/fakebin:$PATH" "$tmp/repo/bin/fm-lint-secrets.sh" "$(git -C "$tmp/repo" rev-parse HEAD)" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a resolvable range failed the secret scan"$'
+'"$out"
+  pass "fm-lint-secrets.sh fails instead of passing when git cannot resolve the range"
+}
+
 test_secret_scan_flags_only_the_commits_a_branch_adds() {
   local tmp base out rc
   if ! command -v gitleaks >/dev/null 2>&1 \
@@ -2186,6 +2206,7 @@ test_fast_mode_on_a_local_branch_keeps_source_following
 test_changed_mode_hides_cross_file_codes_that_ci_still_sees
 test_local_exclusion_list_covers_every_no_external_sources_code
 test_missing_gitleaks_fails_the_secret_scan
+test_secret_scan_fails_when_git_cannot_resolve_the_range
 test_secret_scan_flags_only_the_commits_a_branch_adds
 test_secret_scan_without_a_base_ignores_other_refs
 test_secret_scan_bootstrap_adds_the_gate_without_tripping_its_own_guard

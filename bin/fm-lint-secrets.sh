@@ -50,6 +50,14 @@ actual=$(gitleaks version 2>/dev/null | tr -d '[:space:]') || actual=
 }
 
 cd "$ROOT"
+# gitleaks exits 0 when its own git log fails, so prove the range resolves first.
+for rev in HEAD ${1:+"$1"}; do
+  git rev-parse --verify -q "$rev^{commit}" >/dev/null || {
+    printf 'fm-lint-secrets.sh: git cannot resolve %s to a commit, so the scan cannot cover it.
+' "$rev" >&2
+    exit 1
+  }
+done
 rc=0
 log_opts=(--log-opts HEAD)
 if [ -n "${1:-}" ]; then
