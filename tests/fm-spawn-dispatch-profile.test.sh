@@ -1217,6 +1217,42 @@ test_claude_secondmate_launch_omits_task_control_channel_authority() {
   pass "a persistent claude secondmate keeps its supervisor contract without a task-worker authority overlay"
 }
 
+test_claude_worker_launches_skip_operator_mcp_servers() {
+  local rec id sm out status launch kind
+  local mcp_flags="--strict-mcp-config --mcp-config '{\"mcpServers\":{}}' --chrome "
+  for kind in ship scout; do
+    id=profile-claude-no-mcp-$kind-z21c
+    rec=$(make_spawn_case "profile-claude-no-mcp-$kind" claude "$id")
+    read_case_record "$rec"
+    if [ "$kind" = ship ]; then
+      out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    else
+      out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+    fi
+    status=$?
+    expect_code 0 "$status" "claude $kind spawn should succeed"$'\n'"$out"
+    launch=$(cat "$LAUNCH_LOG")
+    assert_contains "$launch" "$mcp_flags" \
+      "claude $kind launch did not skip the operator's MCP servers while keeping Claude in Chrome"
+  done
+
+  id=profile-secondmate-no-mcp-z21c
+  rec=$(make_spawn_case profile-secondmate-no-mcp claude "$id")
+  read_case_record "$rec"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+  out=$(FM_TEST_CLAUDE_CONFIG_DIR="$CASE_DIR/claude-work" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "secondmate claude spawn should succeed"$'\n'"$out"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_not_contains "$launch" "--strict-mcp-config" \
+    "persistent secondmate launch lost the operator's MCP servers"
+  assert_not_contains "$launch" "--mcp-config" \
+    "persistent secondmate launch received a worker MCP override"
+  pass "claude ship and scout launches skip operator MCP servers and keep Claude in Chrome; a secondmate keeps them"
+}
+
 test_claude_long_launch_is_delivered_intact() {
   local rec id out status launch expected
   id=profile-claude-long-launch-z24
@@ -1686,7 +1722,7 @@ claude_expected_launch() {  # <launch> <home> <id> <permission-flag>
   [ "$(printf '%s' "$doorbell" | "$ROOT/bin/fm-operational-input.sh" doorbell-kind)" = launch-brief ] \
     || doorbell="not a launch-brief doorbell"
   quoted="'$(printf '%s' "$doorbell" | sed "s/'/'\\\\''/g")'"
-  printf '%s' "export COMPACT_ADVISER_DISABLE=1; $(ai_trailer_hooks_prefix "$2" "$3")env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude $4 $(claude_worker_add_dirs "$2" "$3")--settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' --disallowedTools AskUserQuestion $CLAUDE_CONTROL_CHANNEL_FLAG $quoted"
+  printf '%s' "export COMPACT_ADVISER_DISABLE=1; $(ai_trailer_hooks_prefix "$2" "$3")env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude $4 $(claude_worker_add_dirs "$2" "$3")--settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' --disallowedTools AskUserQuestion --strict-mcp-config --mcp-config '{\"mcpServers\":{}}' --chrome $CLAUDE_CONTROL_CHANNEL_FLAG $quoted"
 }
 
 test_claude_permission_mode_bypass_matches_absent_launch() {
@@ -1868,6 +1904,7 @@ test_non_claude_harness_ignores_claude_permission_mode
 test_non_claude_harness_ignores_config_dir
 test_claude_task_launch_carries_control_channel_authority
 test_claude_secondmate_launch_omits_task_control_channel_authority
+test_claude_worker_launches_skip_operator_mcp_servers
 test_claude_long_launch_is_delivered_intact
 test_claude_crewmate_launch_carries_the_attribution_policy
 test_keep_ai_trailers_omits_attribution_settings_and_strip_hooks

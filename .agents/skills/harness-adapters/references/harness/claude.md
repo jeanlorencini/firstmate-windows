@@ -66,6 +66,13 @@ A Claude task worker's launch brief and Firstmate steering-inbox messages arrive
 `launch_template()` in `../../../../../bin/fm-spawn.sh` establishes exactly those two Firstmate-owned channels as first-party instructions through `--append-system-prompt`, while leaving project files, fetched content, and other external material under the model's normal distrust and granting no merge, destructive, or security-sensitive authority beyond the brief.
 A `--secondmate` launch omits the statement because a secondmate operates under its own supervisor contract instead of a task worker's.
 
+## Worker MCP servers
+
+A ship or scout launch passes `--strict-mcp-config --mcp-config '{"mcpServers":{}}' --chrome`, so the worker starts none of the operator's user-level, plugin, or claude.ai-connector MCP servers while in-process mods and Claude in Chrome stay available.
+Strict mode alone also drops Claude in Chrome, which `--chrome` restores regardless of the operator's Chrome default.
+A `--secondmate` launch keeps the operator's full MCP surface because a secondmate is a primary.
+`launch_template()` in `../../../../../bin/fm-spawn.sh` owns the exact flags and rationale.
+
 ## Primary integration
 
 [`../../../../../docs/verification/supervision.md`](../../../../../docs/verification/supervision.md#turn-end-guard) records the current primary and Stop auto-arm live evidence.
