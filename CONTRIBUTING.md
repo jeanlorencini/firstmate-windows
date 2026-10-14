@@ -65,7 +65,7 @@ Coordinate any workflow rollback with its required-check names so a retired chec
 - Helper scripts in `bin/` are plain bash.
   Each starts with a usage header comment; keep it accurate when you change behavior.
   Test scripts and helpers in `tests/` are plain bash too.
-  `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, pinned shellcheck version, pinned actionlint workflow lint, and the backend-purity check rejecting direct Beads CLI calls in core `bin/` scripts).
+  `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, pinned shellcheck version, pinned actionlint workflow lint, pinned gitleaks secret scan, and the backend-purity check rejecting direct Beads CLI calls in core `bin/` scripts).
   CI uses its full canonical partitions; the no-mistakes pre-push gate uses its context-selected default.
   `docs/fm-test-portable-shards.md` owns partition verification and performance evidence.
   Its header and `--help` output own the exact local lint modes, file-set selection, and analysis flags.
@@ -73,6 +73,7 @@ Coordinate any workflow rollback with its required-check names so a retired chec
   It pins one exact shellcheck version and one exact actionlint version and refuses to run under any other.
   Print the shellcheck pin with `bin/fm-lint.sh --required-version` and the actionlint pin with `bin/fm-lint-workflows.sh --required-version`.
   Use `bin/fm-install-shellcheck.sh` and `bin/fm-install-actionlint.sh` to install those exact builds locally; each installer's header owns its destination usage and supported platforms.
+  The same lint path also runs `bin/fm-lint-secrets.sh`, pinned gitleaks over the commits a branch adds (all of HEAD's history without a merge-base); a missing gitleaks fails it (install with `bin/fm-install-gitleaks.sh`), and a change to `.gitleaksignore`, gitleaks config, or that script needs the captain's approval.
   CI installs `tasks-axi` and the Pi package (`@earendil-works/pi-coding-agent`) at exact versions in `.github/workflows/ci.yml`, so an upstream release cannot turn `main` red without a code change.
   Bump those versions in a deliberate PR that runs CI on the new version.
 - Harness-adapter ownership spans detection in `bin/fm-harness.sh`, launch and hook mechanics in `bin/fm-spawn.sh`, spawn-time Claude workspace-trust and external-CLAUDE.md-import pre-approval in `bin/fm-claude-trust.sh`, semantic busy sources and trust gates in `bin/fm-busy-lib.sh`, delivery-only rendered guards in `bin/fm-composer-lib.sh`, cleanup in `bin/fm-teardown.sh`, and facts in the skill tree rooted at `.agents/skills/harness-adapters/SKILL.md`; the `firstmate-coding-guidelines` skill owns the validation policy for checks that depend on those harnesses.
@@ -101,7 +102,7 @@ Check and test the toolbelt before pushing:
 
 ```sh
 while IFS= read -r script; do /bin/bash -n "$script" || exit; done < <(bin/fm-lint.sh --list-files)   # syntax-check the shell surface fm-lint.sh will cover (changed files locally, full set in CI/on main)
-bin/fm-lint.sh   # lint that shell surface plus GitHub workflows via pinned actionlint; the single owner CI and the no-mistakes gate both run
+bin/fm-lint.sh   # lint that shell surface plus GitHub workflows via pinned actionlint and commits via pinned gitleaks; the single owner CI and the no-mistakes gate both run
 bin/fm-test-run.sh tests/<subject>.test.sh   # one script (primary local focus path, timed)
 bin/fm-test-run.sh tests/<a>.test.sh tests/<b>.test.sh   # several subjects at once: bounded automatic concurrency
 bin/fm-test-run.sh --family pure-contract-unit   # ordinary family-scoped local path (serial, timed)

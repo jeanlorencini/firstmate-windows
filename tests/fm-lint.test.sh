@@ -196,6 +196,7 @@ test_canonical_partitions_preserve_full_lint() {
     flags="$tmp/$part.flags"
     mode="$tmp/$part.mode"
     fm_lint_stub_shellcheck "$fakebin" "$log"
+    fm_lint_stub_gitleaks "$fakebin"
     PATH="$fakebin:$PATH" FM_TEST_FLAG_LOG="$flags" FM_TEST_MODE_LOG="$mode" \
       "$LINT" --partition "$part" > "$tmp/$part.out" 2>&1 \
       || fail "canonical partition $part failed: $(cat "$tmp/$part.out")"
@@ -228,6 +229,25 @@ test_canonical_partitions_preserve_full_lint() {
   pass "two canonical lint partitions preserve complete source-aware coverage and reject weakened modes"
 }
 
+# fm_lint_stub_secrets <bin-dir>: a passing secret-scan owner, so a fixture repo
+# that copies fm-lint.sh does not need gitleaks to exercise its other checks.
+fm_lint_stub_secrets() {
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$1/fm-lint-secrets.sh"
+  chmod +x "$1/fm-lint-secrets.sh"
+}
+
+# fm_lint_stub_gitleaks <fakebin-dir>: a clean pinned gitleaks, so a test that
+# drives the real default lint path does not need gitleaks installed. The real
+# gate still requires it; the secret-scan tests below use the real binary.
+fm_lint_stub_gitleaks() {
+  cat > "$1/gitleaks" <<STUB
+#!/usr/bin/env bash
+[ "\${1:-}" = version ] && echo "$("$ROOT/bin/fm-lint-secrets.sh" --required-version)"
+exit 0
+STUB
+  chmod +x "$1/gitleaks"
+}
+
 # fm_lint_stub_git <fakebin-dir>: install a git stub for the changed-file mode
 # tests below. Its answers are driven by env vars the caller sets before
 # invoking fm-lint.sh, so those tests can steer git state without depending on
@@ -241,6 +261,7 @@ test_canonical_partitions_preserve_full_lint() {
 #   FM_TEST_GIT_DIFF_FILE        path to a file of NUL-separated changed paths
 fm_lint_stub_git() {
   local fakebin=$1
+  fm_lint_stub_gitleaks "$fakebin"
   cat > "$fakebin/git" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
@@ -258,6 +279,9 @@ case "$*" in
     ;;
   "rev-parse --verify -q main")
     [ "${FM_TEST_GIT_HAS_MAIN:-1}" = 1 ] && exit 0 || exit 1
+    ;;
+  "rev-parse --verify -q "*"^{commit}")
+    exit 0
     ;;
   "merge-base "*)
     if [ "${FM_TEST_GIT_MERGE_BASE_OK:-1}" = 1 ]; then
@@ -800,6 +824,7 @@ test_changed_mode_hides_cross_file_codes_that_ci_still_sees() {
   lint="$test_root/bin/fm-lint.sh"
   cp "$LINT" "$lint"
   cp "$ROOT/bin/fm-lint-workflows.sh" "$test_root/bin/"
+  fm_lint_stub_secrets "$test_root/bin"
   cp "$ROOT"/.github/workflows/* "$test_root/.github/workflows/"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$test_root/bin/backends/noop.sh"
   fixture="$test_root/tests/fm-lint-local-exclude-fixture.test.sh"
@@ -1168,6 +1193,7 @@ SH
 exit 0
 SH
   chmod +x "$lint_copy" "$tmp/repo/bin/fm-lint-workflows.sh"
+  fm_lint_stub_secrets "$tmp/repo/bin"
   fm_lint_stub_shellcheck "$fakebin" "$log"
 
   for invocation in \
@@ -1231,6 +1257,7 @@ fm_lint_overlay_repo() {
   printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/repo/bin/backends/noop.sh"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/repo/tests/noop.test.sh"
   chmod +x "$tmp/repo/bin/fm-lint.sh" "$tmp/repo/bin/fm-lint-workflows.sh"
+  fm_lint_stub_secrets "$tmp/repo/bin"
   fm_lint_stub_shellcheck "$fakebin" "$tmp/shellcheck.log"
 }
 
@@ -1812,6 +1839,7 @@ exit 0
 SH
   printf '#!/usr/bin/env bash\nbd close fm-example\n' > "$tmp/repo/bin/direct-beads.sh"
   chmod +x "$tmp/repo/bin/fm-lint.sh" "$tmp/repo/bin/fm-lint-workflows.sh"
+  fm_lint_stub_secrets "$tmp/repo/bin"
   fm_lint_stub_shellcheck "$fakebin" "$log"
 
   # Every ShellCheck root passes, then the backend-purity check fails the run:
@@ -1940,6 +1968,202 @@ SH
   pass "seeded dispatcher, adapter, production-owner, and test-local diagnostics preserve parity"
 }
 
+# fm_lint_secrets_repo <tmp>: a git repo holding this secret-scan owner and one
+# clean base commit; prints nothing, leaves the base in $tmp/repo (HEAD).
+fm_lint_secrets_repo() {
+  local tmp=$1
+  mkdir -p "$tmp/repo/bin"
+  cp "$ROOT/bin/fm-lint-secrets.sh" "$tmp/repo/bin/"
+  (
+    cd "$tmp/repo" || exit 1
+    git init -q .
+    printf 'clean\n' > readme.txt
+    git add -A
+    git -c user.name=t -c user.email=t@example.invalid commit -qm base
+  ) || fail "could not build the secret-scan fixture repo"
+}
+
+# A 40-character GitHub-token-shaped fake, assembled at run time so no
+# secret-shaped literal is ever committed to this repository.
+fm_lint_fake_token() {
+  printf 'ghp_%s%s%s\n' 'a1B2c3D4e5F6' 'g7H8i9J0k1L2' 'm3N4o5P6q7R8'
+}
+
+test_missing_gitleaks_fails_the_secret_scan() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-gitleaks-missing)
+  mkdir -p "$tmp/empty" "$tmp/repo/bin"
+  cp "$ROOT/bin/fm-lint-secrets.sh" "$tmp/repo/bin/"
+  rc=0
+  out=$(PATH="$tmp/empty" "$BASH" "$tmp/repo/bin/fm-lint-secrets.sh" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "the secret scan passed with no gitleaks on PATH"
+  assert_contains "$out" "gitleaks $("$ROOT/bin/fm-lint-secrets.sh" --required-version) is required" \
+    "the missing-gitleaks refusal did not name the pinned version"
+  pass "fm-lint-secrets.sh fails instead of skipping when gitleaks is missing"
+}
+
+test_secret_scan_fails_when_git_cannot_resolve_the_range() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-gitleaks-badrange)
+  fm_lint_secrets_repo "$tmp"
+  mkdir -p "$tmp/fakebin"
+  fm_lint_stub_gitleaks "$tmp/fakebin"
+  rc=0
+  out=$(PATH="$tmp/fakebin:$PATH" "$tmp/repo/bin/fm-lint-secrets.sh" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "the secret scan passed although git could not resolve the merge-base"
+  assert_contains "$out" "git cannot resolve" "the unresolvable-range failure did not say why"
+  rc=0
+  out=$(PATH="$tmp/fakebin:$PATH" "$tmp/repo/bin/fm-lint-secrets.sh" "$(git -C "$tmp/repo" rev-parse HEAD)" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a resolvable range failed the secret scan"$'
+'"$out"
+  pass "fm-lint-secrets.sh fails instead of passing when git cannot resolve the range"
+}
+
+test_secret_scan_flags_only_the_commits_a_branch_adds() {
+  local tmp base out rc
+  if ! command -v gitleaks >/dev/null 2>&1 \
+    || [ "$(gitleaks version 2>/dev/null)" != "$("$ROOT/bin/fm-lint-secrets.sh" --required-version)" ]; then
+    pass "SKIP (pinned gitleaks not resolved): secret-scan behavior"
+    return
+  fi
+  tmp=$(fm_test_tmproot fm-lint-gitleaks-scan)
+  fm_lint_secrets_repo "$tmp"
+  base=$(git -C "$tmp/repo" rev-parse HEAD)
+
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a branch with no new commits failed the secret scan"$'\n'"$out"
+
+  printf 'token=%s\n' "$(fm_lint_fake_token)" > "$tmp/repo/leak.txt"
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm leak
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a committed token passed the secret scan"
+  assert_not_contains "$out" "$(fm_lint_fake_token)" "the scan printed the secret instead of redacting it"
+
+  # The same finding, allowlisted by its exact fingerprint, no longer fails a
+  # scan that has no merge-base to guard the allowlist against.
+  printf '%s:leak.txt:github-pat:1\n' "$(git -C "$tmp/repo" rev-parse HEAD)" > "$tmp/repo/.gitleaksignore"
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a fingerprint-allowlisted finding still failed the scan"$'\n'"$out"
+
+  # Against a merge-base, the uncommitted allowlist gitleaks reads still fails.
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an uncommitted allowlist silenced the finding against the merge-base"
+  assert_contains "$out" "needs the captain to approve this lint finding" \
+    "the uncommitted-allowlist failure did not say the captain must approve it"
+
+  # Committing the allowlist inside the scanned range fails even though the
+  # finding is allowlisted: the captain, not the branch, approves that change.
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm allowlist
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an allowlist change inside the scanned range passed the scan"
+  assert_contains "$out" "needs the captain to approve this lint finding" \
+    "the allowlist-change failure did not say the captain must approve it"
+
+  # Editing the gate script in the scanned range is guarded the same way.
+  base=$(git -C "$tmp/repo" rev-parse HEAD)
+  printf '# edited\n' >> "$tmp/repo/bin/fm-lint-secrets.sh"
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm "edit gate"
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an edit to the gate script inside the scanned range passed the scan"
+  assert_contains "$out" "bin/fm-lint-secrets.sh" "the failure did not name the edited gate script"
+  pass "fm-lint-secrets.sh scans the commits a branch adds and honors fingerprint allowlists"
+}
+
+# Without a merge-base the scan covers the history HEAD reaches, so a leak that
+# lives only on another branch does not fail the commit being linted.
+test_secret_scan_without_a_base_ignores_other_refs() {
+  local tmp out rc
+  if ! command -v gitleaks >/dev/null 2>&1 \
+    || [ "$(gitleaks version 2>/dev/null)" != "$("$ROOT/bin/fm-lint-secrets.sh" --required-version)" ]; then
+    pass "SKIP (pinned gitleaks not resolved): secret-scan whole-history scope"
+    return
+  fi
+  tmp=$(fm_test_tmproot fm-lint-gitleaks-refs)
+  fm_lint_secrets_repo "$tmp"
+  git -C "$tmp/repo" checkout -qb other
+  printf 'token=%s\n' "$(fm_lint_fake_token)" > "$tmp/repo/leak.txt"
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm leak
+  git -C "$tmp/repo" checkout -q -
+
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a leak only on another branch failed the whole-history scan"$'\n'"$out"
+
+  git -C "$tmp/repo" merge -q --ff-only other
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a leak reachable from HEAD passed the whole-history scan"
+  pass "fm-lint-secrets.sh without a merge-base scans only the history HEAD reaches"
+}
+
+# The commit that first adds the gate is scanned but not blocked by the
+# allowlist guard, because the default branch has no gate to compare against.
+test_secret_scan_bootstrap_adds_the_gate_without_tripping_its_own_guard() {
+  local tmp base out rc
+  if ! command -v gitleaks >/dev/null 2>&1 \
+    || [ "$(gitleaks version 2>/dev/null)" != "$("$ROOT/bin/fm-lint-secrets.sh" --required-version)" ]; then
+    pass "SKIP (pinned gitleaks not resolved): secret-scan bootstrap"
+    return
+  fi
+  tmp=$(fm_test_tmproot fm-lint-gitleaks-bootstrap)
+  mkdir -p "$tmp/repo"
+  (
+    cd "$tmp/repo" || exit 1
+    git init -q .
+    printf 'clean\n' > readme.txt
+    git add -A
+    git -c user.name=t -c user.email=t@example.invalid commit -qm base
+  ) || fail "could not build the bootstrap fixture repo"
+  base=$(git -C "$tmp/repo" rev-parse HEAD)
+  mkdir -p "$tmp/repo/bin"
+  cp "$ROOT/bin/fm-lint-secrets.sh" "$tmp/repo/bin/"
+  printf '# fingerprints\n' > "$tmp/repo/.gitleaksignore"
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm "add gate"
+
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "the commit adding the gate tripped its own allowlist guard"$'\n'"$out"
+
+  # The scan still runs: a token added alongside the gate still fails.
+  printf 'token=%s\n' "$(fm_lint_fake_token)" > "$tmp/repo/leak.txt"
+  git -C "$tmp/repo" add -A
+  git -C "$tmp/repo" -c user.name=t -c user.email=t@example.invalid commit -qm leak
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a token added with the gate passed the bootstrap scan"
+  pass "fm-lint-secrets.sh skips only the allowlist guard while the default branch has no gate"
+}
+
+test_lint_runs_the_secret_scan_and_explicit_paths_skip_it() {
+  local tmp fakebin out rc
+  tmp=$(fm_test_tmproot fm-lint-secret-wiring)
+  fakebin=$(fm_fakebin "$tmp")
+  fm_lint_overlay_repo "$tmp" "$fakebin"
+  printf '#!/usr/bin/env bash\necho secret-scan-ran >&2\nexit 1\n' > "$tmp/repo/bin/fm-lint-secrets.sh"
+
+  rc=0
+  out=$(cd "$tmp/repo" && CI=true PATH="$fakebin:$PATH" bin/fm-lint.sh 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a failing secret scan did not fail the default lint"
+  assert_contains "$out" "secret-scan-ran" "the default lint did not run the secret scan"
+
+  rc=0
+  out=$(cd "$tmp/repo" && PATH="$fakebin:$PATH" bin/fm-lint.sh bin/backends/noop.sh 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "an explicit-path lint ran the secret scan (exit $rc)"$'\n'"$out"
+  assert_not_contains "$out" "secret-scan-ran" "an explicit-path lint ran the secret scan"
+  pass "fm-lint.sh runs the secret scan on its default path and not for explicit paths"
+}
+
 test_help_reports_the_complete_interface
 test_list_files_reports_the_shell_inventory
 test_canonical_partitions_preserve_full_lint
@@ -1989,3 +2213,9 @@ test_explicit_path_keeps_external_sources
 test_fast_mode_on_a_local_branch_keeps_source_following
 test_changed_mode_hides_cross_file_codes_that_ci_still_sees
 test_local_exclusion_list_covers_every_no_external_sources_code
+test_missing_gitleaks_fails_the_secret_scan
+test_secret_scan_fails_when_git_cannot_resolve_the_range
+test_secret_scan_flags_only_the_commits_a_branch_adds
+test_secret_scan_without_a_base_ignores_other_refs
+test_secret_scan_bootstrap_adds_the_gate_without_tripping_its_own_guard
+test_lint_runs_the_secret_scan_and_explicit_paths_skip_it

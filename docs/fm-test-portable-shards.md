@@ -108,7 +108,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 
 ## Lint partitions and end-to-end latency
 
-`bin/fm-lint.sh` owns two canonical CI partitions, each running full source-aware ShellCheck analysis, workflow validation, and backend-purity checks.
+`bin/fm-lint.sh` owns two canonical CI partitions, each running full source-aware ShellCheck analysis, workflow validation, backend-purity checks, and the gitleaks secret scan.
 CI requires its per-root bounds, so an unenforceable deadline or address-space limit refuses lint rather than running uncapped; the script header owns the envelope and per-root execution contract.
 Its `--list-files` interface exposes partition membership; `tests/fm-lint.test.sh` verifies complete/disjoint executed roots and unchanged analysis flags.
 The workflow uploads each partition's quiet telemetry plus its per-root lifecycle sidecar to distinguish analysis cost, memory use, and host contention.

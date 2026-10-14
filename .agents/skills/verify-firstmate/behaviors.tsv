@@ -104,6 +104,7 @@ fm-startup-network	bin:fm-startup-network.sh	Runs every network check a session 
 fm-tool-update-check	bin:fm-tool-update-check.sh	Reports which watched tools have an update available or installed but not yet in effect.	unproven	#93	
 fm-vendor-auth-probe	bin:fm-vendor-auth-probe.sh	Probes whether a named vendor CLI's authentication actually works, as one bounded fact.	unproven	#93	
 fm-install-actionlint	bin:fm-install-actionlint.sh	Installs CI's pinned, checksum-verified actionlint build.	unproven	#93	
+fm-install-gitleaks	bin:fm-install-gitleaks.sh	Installs CI's pinned, checksum-verified gitleaks build.	unproven	#93	
 fm-install-herdr	bin:fm-install-herdr.sh	Installs CI's pinned, checksum-verified Herdr build.	unproven	#93	
 fm-install-shellcheck	bin:fm-install-shellcheck.sh	Installs CI's pinned, checksum-verified ShellCheck build.	unproven	#93	
 fm-install-treehouse	bin:fm-install-treehouse.sh	Installs CI's pinned, checksum-verified Treehouse build.	unproven	#93	
@@ -122,6 +123,7 @@ fm-lint	bin:fm-lint.sh	Runs firstmate's pinned ShellCheck and lint rules over th
 fm-test-run	bin:fm-test-run.sh	Runs firstmate's own behavior-test suites and enforces complete regression coverage.	unproven	#98	
 fm-doc-audience-check	bin:fm-doc-audience-check.sh	Validates that every tracked prose file is classified in the documentation-audience inventory.	unproven	#98	
 fm-lint-workflows	bin:fm-lint-workflows.sh	Lints every GitHub Actions workflow file with pinned actionlint.	unproven	#98	
+fm-lint-secrets	bin:fm-lint-secrets.sh	Scans git history with pinned gitleaks so a committed password or key fails lint before it is pushed.	unproven	#98	
 fm-test-isolation-proof	bin:fm-test-isolation-proof.sh	Proves the portable test suite's concurrency claims with bounded concurrent runs.	unproven	#98	
 fm-herdr-ci-cleanup	bin:fm-herdr-ci-cleanup.sh	Cleans up CI-owned Herdr lab sessions left behind after a real-Herdr CI run.	unproven	#98	
 fm-herdr-lab	bin:fm-herdr-lab.sh	Provisions and operates an isolated Herdr lab session without touching the live default session.	unproven	#98	

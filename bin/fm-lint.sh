@@ -18,7 +18,10 @@
 # every production shell separately as a canonical, source-aware root.
 # The default (no explicit-path) path also runs bin/fm-lint-workflows.sh so a
 # malformed GitHub workflow, including a self-broken ci.yml, fails locally
-# before merge instead of only failing to run as CI.
+# before merge instead of only failing to run as CI. It likewise runs
+# bin/fm-lint-secrets.sh, pinned gitleaks over the commits this branch adds
+# (all of HEAD's history in CI, on main, or without a merge-base); a missing
+# gitleaks fails the run.
 #
 # With no explicit paths, the file set and source-following posture depend
 # on context:
@@ -395,6 +398,13 @@ fm_lint_usage() {
 fm_lint_run_workflows() {
   [ "$EXPLICIT_PATHS" -eq 0 ] || return 0
   "$SELF_DIR/fm-lint-workflows.sh"
+}
+
+# Default no-args lint also scans the commits this branch adds (all of HEAD's
+# history without a merge-base) for secrets; a missing gitleaks fails it.
+fm_lint_run_secrets() {
+  [ "$EXPLICIT_PATHS" -eq 0 ] || return 0
+  "$SELF_DIR/fm-lint-secrets.sh" "$MERGE_BASE"
 }
 
 fm_lint_realpath() {  # <path>
@@ -788,6 +798,7 @@ fm_lint_is_canonical_root() {
 }
 
 CHANGED_MODE=0
+MERGE_BASE=
 EXPLICIT_PATHS=0
 FOLLOW_SOURCES=1
 EXCLUDE_CODES=
@@ -803,7 +814,7 @@ else
     base_ref=$(fm_lint_changed_base_ref) || base_ref=
     merge_base=
     [ -z "$base_ref" ] || merge_base=$(git merge-base "$base_ref" HEAD 2>/dev/null) || merge_base=
-    [ -z "$merge_base" ] || full_lint=0
+    [ -z "$merge_base" ] || { full_lint=0; MERGE_BASE=$merge_base; }
   fi
 
   if [ "$full_lint" -eq 1 ]; then
@@ -897,6 +908,7 @@ if [ "$CHANGED_MODE" -eq 1 ] && [ "$ROOT_COUNT" -eq 0 ]; then
   overall_rc=0
   fm_lint_run_backend_purity || overall_rc=$?
   fm_lint_run_workflows || overall_rc=$?
+  fm_lint_run_secrets || overall_rc=$?
   exit "$overall_rc"
 fi
 
@@ -1235,6 +1247,11 @@ if [ "$overall_rc" -eq 0 ]; then
   fm_lint_run_workflows || overall_rc=$?
 else
   fm_lint_run_workflows || true
+fi
+secrets_rc=0
+fm_lint_run_secrets || secrets_rc=$?
+if [ "$overall_rc" -eq 0 ] && [ "$secrets_rc" -ne 0 ]; then
+  overall_rc=$secrets_rc
 fi
 
 if [ -n "$TELEMETRY" ]; then

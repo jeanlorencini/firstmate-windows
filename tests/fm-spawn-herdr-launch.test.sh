@@ -148,7 +148,7 @@ test_settle_timeout_closes_the_projected_herdr_pane() {
   write_settle_timeout_step "$step"
   for backend in herdr tmux; do
     if out=$(BACKEND=$backend T=fmtest:w1:p1 HERDR_PROJECTION_ABORT_CLEANUP=1 \
-      WT= PROJ_ABS="$dir" last_seen="$dir" last_reason="it is the spawning project itself" \
+      WT='' PROJ_ABS="$dir" last_seen="$dir" last_reason="it is the spawning project itself" \
       bash "$step" 2>&1); then
       fail "the $backend settle timeout must still refuse the spawn: $out"
     fi
