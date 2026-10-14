@@ -1098,7 +1098,7 @@ test_toon_json_parity() {
         assert_contains "$hdr" "[$n]" "TOON $k row count must equal JSON length $n"
         local jfields tfields
         # The JSON-only full-text fields are dropped from TOON by contract.
-        jfields=$(printf '%s' "$json" | jq -r --arg k "$k" '.[$k][0] | del(.name_full, .doing_full, .title_full) | keys_unsorted | join(",")')
+        jfields=$(printf '%s' "$json" | jq -r --arg k "$k" '.[$k][0] | del(.name_full, .doing_full) | keys_unsorted | join(",")')
         tfields=$(printf '%s' "$hdr" | sed -E 's/^[^{]*\{//; s/\}:.*$//; s/"//g')
         [ "$jfields" = "$tfields" ] || fail "TOON $k fields ($tfields) must equal JSON fields ($jfields)"
       fi
@@ -2582,11 +2582,11 @@ EOF
   pass "Underway rows carry the durable task name and gates carry their filed date"
 }
 
-test_json_full_text_fields_carry_untruncated_titles() {
-  local home fakebin json toon long_name long_doing long_gate
+test_json_full_text_fields_carry_bounded_full_titles() {
+  local home fakebin json toon long_name long_doing
   long_name="Investigar o PermissionError que deixa a fonte de dados do cockpit sem atualizar no navegador (Windows)"
-  long_doing="no-mistakes review round 2 is still collecting findings across every changed surface before the next fix"
-  long_gate="Queued follow-up whose title runs well past the sixty character gate bound for the board"
+  # Past the 500-character full-text bound, so doing_full proves the cap.
+  long_doing=$(printf 'review round 2 is still collecting findings across every changed surface %.0s' 1 2 3 4 5 6 7)
   home=$(make_home full-text)
   : > "$home/data/secondmates.md"
   mkdir -p "$home/projects/main-wt"
@@ -2595,7 +2595,6 @@ test_json_full_text_fields_carry_untruncated_titles() {
 - [ ] long-ship - $long_name (repo: firstmate) (kind: ship) (since 2026-07-09)
 
 ## Queued
-- [ ] long-gate - $long_gate (repo: firstmate) (kind: ship) (since 2026-07-10)
 
 ## Done
 EOF
@@ -2608,16 +2607,14 @@ EOF
 
   fakebin=$(make_fakebin "$home")
   json=$(run "$home" "$fakebin" --json)
-  printf '%s' "$json" | jq -e --arg name "$long_name" --arg doing "$long_doing" --arg gate "$long_gate" '
+  printf '%s' "$json" | jq -e --arg name "$long_name" --arg doing "$long_doing" '
     (.in_flight | any(.id == "long-ship"
-      and .name_full == $name and .doing_full == $doing
+      and .name_full == $name and .doing_full == ($doing[:500] + "…")
       and .name == ($name[:70] + "…") and .doing == ($doing[:90] + "…")))
-      and (.gates | any(.id == "long-gate"
-        and .title_full == $gate and .title == ($gate[:60] + "…")))
-  ' >/dev/null || fail "JSON full-text fields were missing or the truncated fields changed: $json"
+  ' >/dev/null || fail "JSON full-text fields were missing or unbounded, or the truncated fields changed: $json"
   toon=$(run "$home" "$fakebin")
   assert_not_contains "$toon" "_full" "TOON must stay compact without the JSON-only full-text fields"
-  pass "JSON carries untruncated name_full, doing_full, and title_full beside the truncated fields"
+  pass "JSON carries name_full and doing_full bounded at 500 characters beside the truncated fields"
 }
 
 test_mixed_secondmate_roles_partial_state_and_captain_readiness() {
@@ -3435,7 +3432,7 @@ test_active_children_project_independent_of_home_captain_hold
 test_nameless_legacy_summary_uses_its_durable_identifier
 test_newest_filed_gates_are_selected_before_snapshot_bounds
 test_underway_and_gate_rows_carry_the_durable_name_and_filed_date
-test_json_full_text_fields_carry_untruncated_titles
+test_json_full_text_fields_carry_bounded_full_titles
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection
 test_completed_scout_report_not_pending
