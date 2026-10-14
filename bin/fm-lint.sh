@@ -20,7 +20,7 @@
 # malformed GitHub workflow, including a self-broken ci.yml, fails locally
 # before merge instead of only failing to run as CI. It likewise runs
 # bin/fm-lint-secrets.sh, pinned gitleaks over the commits this branch adds
-# (the whole history in CI, on main, or without a merge-base); a missing
+# (all of HEAD's history in CI, on main, or without a merge-base); a missing
 # gitleaks fails the run.
 #
 # With no explicit paths, the file set and source-following posture depend
@@ -400,7 +400,7 @@ fm_lint_run_workflows() {
   "$SELF_DIR/fm-lint-workflows.sh"
 }
 
-# Default no-args lint also scans the commits this branch adds (the whole
+# Default no-args lint also scans the commits this branch adds (all of HEAD's
 # history without a merge-base) for secrets; a missing gitleaks fails it.
 fm_lint_run_secrets() {
   [ "$EXPLICIT_PATHS" -eq 0 ] || return 0
