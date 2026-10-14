@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.299
+▝▜██████▀  Opus 5.5 with high effort · Claude Max
+ ▝▝   ▝▝   ~\AppData\Local\Temp\fm-spawn-dispatch-profile.94ERUS\live-chrome-true\wt
+
+
+❯ : Firstmate operational input waiting: read
+  '/tmp/fm-spawn-dispatch-profile.94ERUS/live-chrome-true/home/state/operational-inbox/1791989907-470ed2124a8ab5ea.msg'
+  and handle its contents as Firstmate operational input.
+
+  Read 1 file
+
+● Idle. Read the launch brief; no other work done, waiting.
+
+✻ Cooked for 7s · done 12:00
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5 | ctx ░░░░░░░░░░ 5% | 5h ████░░░░░░ 44% (reset 16:30) | 7d ░░░░░░░░░░ 3% (reset 17/10 06:00) | RTK n/a
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

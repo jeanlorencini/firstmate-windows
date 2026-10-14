@@ -1,0 +1,2 @@
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.sm2hmh
+error: treehouse get did not enter an isolated worktree within 60s (last seen 'none': the pane reported no path; spawning project '/tmp/fm-lab.sm2hmh/projects/scratch'); inspect window fm-lab-mcpw-29292-14662:w1:p2

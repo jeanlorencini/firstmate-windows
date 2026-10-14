@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.299
+▝▜██████▀  Opus 5.5 with medium effort · Claude Max
+ ▝▝   ▝▝   ~\AppData\Local\Temp\fm-spawn-dispatch-profile.94ERUS\live-chrome-false\wt
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Manage MCP servers
+   18 servers
+
+     User MCPs (C:\Users\loren\.claude.json)
+   ❯ ✔ chatgpt-use                      4 tools
+     ✔ codegraph                        1 tool
+     ✔ pablooo                          4 tools
+
+     claude.ai
+     ✔ claude.ai Claude Docs            8 tools
+     ✔ claude.ai Google Drive           11 tools
+     ✔ claude.ai Mobbin                 3 tools
+
+     Built-in MCPs (always available)
+     ✔ claude-in-chrome                 22 tools
+     ✔ plugin:autoharness:stage_skill   1 tool
+     ⚠ plugin:design:atlassian          needs authentication
+     ⚠ plugin:design:figma              needs authentication
+     ◯ plugin:design:gmail              not configured
+     ◯ plugin:design:google calendar    not configured
+     ⚠ plugin:design:intercom           needs authentication
+     ⚠ plugin:design:linear             needs authentication
+     ⚠ plugin:design:notion             needs authentication
+     ⚠ plugin:design:slack              needs authentication
+     ✔ task-list                        2 tools
+     ✔ todo-progress                    1 tool
+
+   https://code.claude.com/docs/en/mcp for help
+   ↑/↓ to navigate · Enter to confirm · Esc to cancel

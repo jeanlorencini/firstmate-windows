@@ -1,0 +1,17 @@
+worker root: pid=184088 name=sh.exe
+root command line flags: --dangerously-skip-permissions
+sh.exe pid=184088 private=5.7MB :: "C:\Program Files\Git\usr\bin\sh.exe" /c/Users/loren/AppData/Roaming/npm/claude --dangerously-skip-permissions --add-dir /tmp/fm-spawn-dispatch-profile.94ERUS/l...
+  claude.exe pid=151596 private=669.2MB :: C:\Users\loren\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe --dangerously-skip-permissions --add-dir C:/Users/loren/AppData/Local/T...
+    chatgpt-use.exe pid=39024 private=0.7MB :: chatgpt-use agent-mcp
+      conhost.exe pid=122692 private=1.2MB :: \??\C:\WINDOWS\system32\conhost.exe 0x4
+    cmd.exe pid=135900 private=4.6MB :: C:\WINDOWS\system32\cmd.exe /d /s /c "codegraph ^"serve^" ^"--mcp^""
+      conhost.exe pid=173260 private=1.3MB :: \??\C:\WINDOWS\system32\conhost.exe 0x4
+      node.exe pid=164304 private=15.7MB :: "node" "C:\Users\loren\AppData\Roaming\npm\\node_modules\@colbymchenry\codegraph\npm-shim.js" "serve" "--mcp"
+        node.exe pid=71316 private=59.3MB :: C:\Users\loren\AppData\Roaming\npm\node_modules\@colbymchenry\codegraph\node_modules\@colbymchenry\codegraph-win32-x64\node.exe --liftoff-only --disable-warning...
+          node.exe pid=30896 private=18.8MB :: C:\Users\loren\AppData\Roaming\npm\node_modules\@colbymchenry\codegraph\node_modules\@colbymchenry\codegraph-win32-x64\node.exe -e " const fs = require('fs'); c...
+    cmd.exe pid=52288 private=8MB :: C:\WINDOWS\system32\cmd.exe /d /s /c "python3 ^"-m^" ^"autoharness.stage_skill.server^""
+      conhost.exe pid=230440 private=1.3MB :: \??\C:\WINDOWS\system32\conhost.exe 0x4
+      python3.exe pid=225848 private=4.6MB :: python3 "-m" "autoharness.stage_skill.server"
+        python.exe pid=79136 private=9.3MB :: "C:\Python314\python.exe" "-m" "autoharness.stage_skill.server"
+descendant processes (excluding root): 12
+total private MB (root + descendants): 799.7

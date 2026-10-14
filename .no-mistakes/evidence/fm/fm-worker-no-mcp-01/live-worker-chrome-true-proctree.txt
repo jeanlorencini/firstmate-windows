@@ -1,0 +1,6 @@
+worker root: pid=122480 name=sh.exe
+root command line flags: --dangerously-skip-permissions --disallowedTools --strict-mcp-config --mcp-config --chrome
+sh.exe pid=122480 private=5.7MB :: "C:\Program Files\Git\usr\bin\sh.exe" /c/Users/loren/AppData/Roaming/npm/claude --dangerously-skip-permissions --add-dir /tmp/fm-spawn-dispatch-profile.94ERUS/l...
+  claude.exe pid=195732 private=680MB :: C:\Users\loren\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe --dangerously-skip-permissions --add-dir C:/Users/loren/AppData/Local/T...
+descendant processes (excluding root): 1
+total private MB (root + descendants): 685.7

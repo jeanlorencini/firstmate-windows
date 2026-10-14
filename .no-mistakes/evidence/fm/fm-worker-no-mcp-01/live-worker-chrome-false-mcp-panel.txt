@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.299
+▝▜██████▀  Opus 5.5 with medium effort · Claude Max
+ ▝▝   ▝▝   ~\AppData\Local\Temp\fm-spawn-dispatch-profile.94ERUS\live-chrome-false\wt
+
+
+❯ : Firstmate operational input waiting: read '/tmp/fm-spawn-dispatch-profile.94ERUS/live-chrome-false/home/state/opera
+  tional-inbox/1791989927-2e3e1fe4c741d637.msg' and handle its contents as Firstmate operational input.
+
+  Read 1 file
+
+● Idle, and waiting for instructions.
+
+✻ Crunched for 8s · done 12:04
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Manage MCP servers
+   3 servers
+
+     Built-in MCPs (always available)
+   ❯ ✔ claude-in-chrome   22 tools
+     ✔ task-list          2 tools
+     ✔ todo-progress      1 tool
+
+   https://code.claude.com/docs/en/mcp for help
+   ↑/↓ to navigate · Enter to confirm · Esc to cancel
