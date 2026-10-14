@@ -1,0 +1,8 @@
+runner=/tmp/tmp.V9tayfy6Xz
+open /c/Users/loren/.no-mistakes/worktrees/be9d69754c83/01M4W9EXKX5WW5W11JYYEM0QVB/platform/windows/../..: S-1-5-21-483750937-1945151441-3185177221-1003 A;OICIID;0x1200a9
+ok - claude ship and scout launches skip operator MCP servers and keep Claude in Chrome only when the operator's default enables it; a secondmate keeps them
+ok - config/claude-permission-mode=bypass launches exactly as an absent file does
+ok - config/claude-permission-mode=auto replaces --dangerously-skip-permissions with --permission-mode auto
+ok - a persistent claude secondmate keeps its supervisor contract without a task-worker authority overlay
+ok - fm-spawn: a Claude launch longer than 1024 bytes is delivered intact through the staging path
+# selected claude launch tests passed

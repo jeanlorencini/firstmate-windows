@@ -1,0 +1,10 @@
+== baseline
+{"claude_code_version":"2.1.299","mcp_servers":["plugin:autoharness:stage_skill:connected","plugin:design:slack:needs-auth","plugin:design:figma:needs-auth","plugin:design:linear:needs-auth","plugin:design:atlassian:needs-auth","plugin:design:notion:needs-auth","plugin:design:intercom:needs-auth","plugin:design:google calendar:failed","plugin:design:gmail:failed","chatgpt-use:connected","pablooo:connected","codegraph:connected","claude.ai Claude Docs:connected","claude.ai Mobbin:connected","claude.ai Google Drive:connected","task-list:connected","todo-progress:connected"],"tool_count":66,"mcp_tool_count":35}
+== strict
+{"claude_code_version":"2.1.299","mcp_servers":["task-list:connected","todo-progress:connected"],"tool_count":31,"mcp_tool_count":3}
+== strict-chrome
+{"claude_code_version":"2.1.299","mcp_servers":["claude-in-chrome:connected","task-list:connected","todo-progress:connected"],"tool_count":53,"mcp_tool_count":25}
+== project-baseline
+{"claude_code_version":"2.1.299","mcp_servers":["plugin:autoharness:stage_skill:connected","plugin:design:slack:needs-auth","plugin:design:figma:needs-auth","plugin:design:linear:needs-auth","plugin:design:atlassian:needs-auth","plugin:design:notion:needs-auth","plugin:design:intercom:needs-auth","plugin:design:google calendar:failed","plugin:design:gmail:failed","chatgpt-use:connected","pablooo:connected","codegraph:connected","projsrv:pending","claude.ai Claude Docs:connected","claude.ai Mobbin:connected","claude.ai Google Drive:connected","task-list:connected","todo-progress:connected"],"tool_count":66,"mcp_tool_count":35}
+== project-strict
+{"claude_code_version":"2.1.299","mcp_servers":["task-list:connected","todo-progress:connected"],"tool_count":31,"mcp_tool_count":3}
