@@ -196,6 +196,7 @@ test_canonical_partitions_preserve_full_lint() {
     flags="$tmp/$part.flags"
     mode="$tmp/$part.mode"
     fm_lint_stub_shellcheck "$fakebin" "$log"
+    fm_lint_stub_gitleaks "$fakebin"
     PATH="$fakebin:$PATH" FM_TEST_FLAG_LOG="$flags" FM_TEST_MODE_LOG="$mode" \
       "$LINT" --partition "$part" > "$tmp/$part.out" 2>&1 \
       || fail "canonical partition $part failed: $(cat "$tmp/$part.out")"
@@ -233,6 +234,18 @@ test_canonical_partitions_preserve_full_lint() {
 fm_lint_stub_secrets() {
   printf '#!/usr/bin/env bash\nexit 0\n' > "$1/fm-lint-secrets.sh"
   chmod +x "$1/fm-lint-secrets.sh"
+}
+
+# fm_lint_stub_gitleaks <fakebin-dir>: a clean pinned gitleaks, so a test that
+# drives the real default lint path does not need gitleaks installed. The real
+# gate still requires it; the secret-scan tests below use the real binary.
+fm_lint_stub_gitleaks() {
+  cat > "$1/gitleaks" <<STUB
+#!/usr/bin/env bash
+[ "\${1:-}" = version ] && echo "$("$ROOT/bin/fm-lint-secrets.sh" --required-version)"
+exit 0
+STUB
+  chmod +x "$1/gitleaks"
 }
 
 # fm_lint_stub_git <fakebin-dir>: install a git stub for the changed-file mode
