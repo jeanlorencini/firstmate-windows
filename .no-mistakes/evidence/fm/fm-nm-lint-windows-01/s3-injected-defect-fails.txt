@@ -1,0 +1,44 @@
+# S3 disposable clone at 73b3849 with an injected ShellCheck defect (uncommitted edit), cwd = clone root, PATH = logon PATH
+# injected diff:
+diff --git a/bin/fm-jev-mem-guard.sh b/bin/fm-jev-mem-guard.sh
+index 1e22fba..4d10e59 100755
+--- a/bin/fm-jev-mem-guard.sh
++++ b/bin/fm-jev-mem-guard.sh
+@@ -5,3 +5,9 @@ set -euo pipefail
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ 
+ exec python3 "$SCRIPT_DIR/fm-jev-mem-guard.py" "$@"
++
++fm_lab_injected_defect() {
++  cd "$1"
++  echo $2
++}
++fm_lab_injected_defect "$@"
+
+parsed commands.lint: "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"
+shell mode: cmd
+argv: ["cmd.exe" "/c" "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"]
+cwd: C:\Users\loren\AppData\Local\Temp\nmlint-clone.ncrO8Q\repo
+running linter: git -c alias.fm-lint=!bin/fm-lint.sh fm-lint
+----
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local changed-file mode; ShellCheck source following disabled
+
+In bin/fm-jev-mem-guard.sh line 11:
+  echo $2
+       ^-- SC2086 (info): Double quote to prevent globbing and word splitting.
+
+Did you mean:
+  echo "$2"
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2086 -- Double quote to prevent globbing ...
+fm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)
+fm-lint-workflows.sh: 4 workflow files valid
+9:33AM INF Unknown SCM platform. Use --platform to include links in findings. host=
+9:33AM INF 2 commits scanned.
+9:33AM INF scanned ~600 bytes (600 bytes) in 214ms
+9:33AM INF no leaks found
+----
+exit code: 1
+

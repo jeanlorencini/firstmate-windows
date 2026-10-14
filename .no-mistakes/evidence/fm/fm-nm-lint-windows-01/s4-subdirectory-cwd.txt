@@ -1,0 +1,48 @@
+# S4 started from a subdirectory (docs\): the git ! alias runs bin/fm-lint.sh from the repository top level
+
+## clone with injected defect, cwd = clone\docs
+parsed commands.lint: "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"
+shell mode: cmd
+argv: ["cmd.exe" "/c" "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"]
+cwd: C:\Users\loren\AppData\Local\Temp\nmlint-clone.ncrO8Q\repo\docs
+running linter: git -c alias.fm-lint=!bin/fm-lint.sh fm-lint
+----
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local changed-file mode; ShellCheck source following disabled
+
+In bin/fm-jev-mem-guard.sh line 11:
+  echo $2
+       ^-- SC2086 (info): Double quote to prevent globbing and word splitting.
+
+Did you mean:
+  echo "$2"
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2086 -- Double quote to prevent globbing ...
+fm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)
+fm-lint-workflows.sh: 4 workflow files valid
+9:34AM INF Unknown SCM platform. Use --platform to include links in findings. host=
+9:34AM INF 2 commits scanned.
+9:34AM INF scanned ~600 bytes (600 bytes) in 222ms
+9:34AM INF no leaks found
+----
+exit code: 1
+
+## clean branch worktree, cwd = worktree\docs
+parsed commands.lint: "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"
+shell mode: cmd
+argv: ["cmd.exe" "/c" "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"]
+cwd: C:\Users\loren\.no-mistakes\worktrees\be9d69754c83\01M4X61YAA5RDYMG8RGJK64W0X\docs
+running linter: git -c alias.fm-lint=!bin/fm-lint.sh fm-lint
+----
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local changed-file mode; ShellCheck source following disabled
+fm-lint.sh: no changed lint targets
+fm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)
+fm-lint-workflows.sh: 4 workflow files valid
+9:34AM INF 2 commits scanned.
+9:34AM INF scanned ~600 bytes (600 bytes) in 194ms
+9:34AM INF no leaks found
+----
+exit code: 0
+

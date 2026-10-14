@@ -1,0 +1,27 @@
+# S6 adversarial: cmd.exe '!' handling
+# Registry (no DelayedExpansion set on this machine, so the daemon's cmd.exe /c runs with it off; S2 covers that case):
+
+DelayedExpansion : 
+AutoRun          : 
+EnableExtensions : 1
+
+HKCU Command Processor key: False
+
+# Worst case: delayed expansion forced on (cmd.exe /v:on /c) - the lone '!' still reaches git
+parsed commands.lint: "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"
+shell mode: cmd-v-on
+argv: ["cmd.exe" "/v:on" "/c" "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"]
+cwd: C:\Users\loren\.no-mistakes\worktrees\be9d69754c83\01M4X61YAA5RDYMG8RGJK64W0X
+running linter: git -c alias.fm-lint=!bin/fm-lint.sh fm-lint
+----
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local changed-file mode; ShellCheck source following disabled
+fm-lint.sh: no changed lint targets
+fm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)
+fm-lint-workflows.sh: 4 workflow files valid
+9:35AM INF 2 commits scanned.
+9:35AM INF scanned ~600 bytes (600 bytes) in 208ms
+9:35AM INF no leaks found
+----
+exit code: 0
+

@@ -1,0 +1,18 @@
+# S7 installed linters vs official release assets (downloaded 2026-10-14 from GitHub release pages)
+## actionlint 1.7.12
+official checksums.txt line for the Windows zip:
+6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9  actionlint_1.7.12_windows_amd64.zip
+sha256 of downloaded zip:
+6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9
+zip listing:
+  6432768  2026-03-30 14:48   actionlint.exe
+sha256 actionlint.exe inside official zip: 54ca21be3de4c7cfa26914aa8b61bd76bf573ef3caac5f80d110558cdf241718
+sha256 C:\Users\loren\bin\actionlint.exe:          54ca21be3de4c7cfa26914aa8b61bd76bf573ef3caac5f80d110558cdf241718
+version: 1.7.12
+
+## ShellCheck 0.11.0 (upstream publishes no checksum file; compared against the exe inside the official release zip)
+zip listing:
+ 34778624  2025-08-03 21:22   shellcheck.exe
+sha256 shellcheck.exe inside official zip: c9e82ada36ef4b8d4caf1f97fa89289048c8f4a33c2c76ffffc88bfe09ff00c5
+sha256 C:\Users\loren\bin\shellcheck.exe:      c9e82ada36ef4b8d4caf1f97fa89289048c8f4a33c2c76ffffc88bfe09ff00c5
+version: version: 0.11.0

@@ -1,0 +1,21 @@
+# PATH = Windows logon PATH (Machine + User registry), as the no-mistakes daemon inherits on Windows
+# where git/bash/sh/shellcheck/actionlint/gitleaks via cmd.exe:
+C:\Program Files\Git\cmd\git.exe
+C:\WINDOWS\System32\bash.exe
+INFORMAÇÕES: não foi possível localizar arquivos para o(s) padrão(ões) especificado(s).
+C:\Users\loren\bin\shellcheck.exe
+C:\Users\loren\bin\actionlint.exe
+C:\Users\loren\bin\gitleaks.exe
+
+# S1 BEFORE (base fb9ddcb .no-mistakes.yaml)
+parsed commands.lint: "bin/fm-lint.sh"
+shell mode: cmd
+argv: ["cmd.exe" "/c" "bin/fm-lint.sh"]
+cwd: C:\Users\loren\.no-mistakes\worktrees\be9d69754c83\01M4X61YAA5RDYMG8RGJK64W0X
+running linter: bin/fm-lint.sh
+----
+'bin' não é reconhecido como um comando interno
+ou externo, um programa operável ou um arquivo em lotes.
+----
+exit code: 1
+

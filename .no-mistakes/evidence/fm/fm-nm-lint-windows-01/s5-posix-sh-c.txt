@@ -1,0 +1,47 @@
+# S5 POSIX path: same parsed string through exec("sh","-c",cmd) as no-mistakes does on Linux/macOS (sh = Git for Windows MSYS sh: /usr/bin/sh)
+
+## clean branch worktree, cwd = worktree root
+parsed commands.lint: "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"
+shell mode: sh
+argv: ["sh" "-c" "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"]
+cwd: C:/Users/loren/.no-mistakes/worktrees/be9d69754c83/01M4X61YAA5RDYMG8RGJK64W0X
+running linter: git -c alias.fm-lint=!bin/fm-lint.sh fm-lint
+----
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local changed-file mode; ShellCheck source following disabled
+fm-lint.sh: no changed lint targets
+fm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)
+fm-lint-workflows.sh: 4 workflow files valid
+[90m9:34AM[0m [32mINF[0m [1m2 commits scanned.[0m
+[90m9:34AM[0m [32mINF[0m [1mscanned ~600 bytes (600 bytes) in 176ms[0m
+[90m9:34AM[0m [32mINF[0m [1mno leaks found[0m
+----
+exit code: 0
+
+## clone with injected defect, cwd = clone/docs
+parsed commands.lint: "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"
+shell mode: sh
+argv: ["sh" "-c" "git -c alias.fm-lint=!bin/fm-lint.sh fm-lint"]
+cwd: C:/Users/loren/AppData/Local/Temp/nmlint-clone.ncrO8Q/repo/docs
+running linter: git -c alias.fm-lint=!bin/fm-lint.sh fm-lint
+----
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local changed-file mode; ShellCheck source following disabled
+
+In bin/fm-jev-mem-guard.sh line 11:
+  echo $2
+       ^-- SC2086 (info): Double quote to prevent globbing and word splitting.
+
+Did you mean:
+  echo "$2"
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2086 -- Double quote to prevent globbing ...
+fm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)
+fm-lint-workflows.sh: 4 workflow files valid
+[90m9:34AM[0m [32mINF[0m [1mUnknown SCM platform. Use --platform to include links in findings.[0m [36mhost=[0m
+[90m9:34AM[0m [32mINF[0m [1m2 commits scanned.[0m
+[90m9:34AM[0m [32mINF[0m [1mscanned ~600 bytes (600 bytes) in 214ms[0m
+[90m9:34AM[0m [32mINF[0m [1mno leaks found[0m
+----
+exit code: 1
