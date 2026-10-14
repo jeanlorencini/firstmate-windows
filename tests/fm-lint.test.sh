@@ -2042,11 +2042,19 @@ test_secret_scan_flags_only_the_commits_a_branch_adds() {
   [ "$rc" -ne 0 ] || fail "a committed token passed the secret scan"
   assert_not_contains "$out" "$(fm_lint_fake_token)" "the scan printed the secret instead of redacting it"
 
-  # The same finding, allowlisted by its exact fingerprint, no longer fails.
+  # The same finding, allowlisted by its exact fingerprint, no longer fails a
+  # scan that has no merge-base to guard the allowlist against.
   printf '%s:leak.txt:github-pat:1\n' "$(git -C "$tmp/repo" rev-parse HEAD)" > "$tmp/repo/.gitleaksignore"
   rc=0
-  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" 2>&1) || rc=$?
   [ "$rc" -eq 0 ] || fail "a fingerprint-allowlisted finding still failed the scan"$'\n'"$out"
+
+  # Against a merge-base, the uncommitted allowlist gitleaks reads still fails.
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-secrets.sh" "$base" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an uncommitted allowlist silenced the finding against the merge-base"
+  assert_contains "$out" "needs the captain to approve this lint finding" \
+    "the uncommitted-allowlist failure did not say the captain must approve it"
 
   # Committing the allowlist inside the scanned range fails even though the
   # finding is allowlisted: the captain, not the branch, approves that change.

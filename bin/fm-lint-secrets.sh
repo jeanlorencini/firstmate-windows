@@ -11,8 +11,8 @@
 # With a merge-base the scan covers only the commits it adds (<base>..HEAD);
 # without one (CI, main, merge-base-less) it covers the whole history reachable
 # from HEAD, never other branches or remote refs.
-# With a merge-base, a change to .gitleaksignore, a gitleaks config file, or this script in
-# that range also fails, because an automated allowlist edit must not get a
+# With a merge-base, a change to .gitleaksignore, a gitleaks config file, or this script
+# since that base, committed or not, also fails, because an automated allowlist edit must not get a
 # finding through; the captain approves such a change. The guard applies only
 # when the merge-base already contains this script, so the commit that first
 # adds the gate is scanned but not blocked by it.
@@ -62,13 +62,14 @@ rc=0
 log_opts=(--log-opts HEAD)
 if [ -n "${1:-}" ]; then
   log_opts=(--log-opts "$1..HEAD")
-  # An allowlist, config, or gate-script edit in the scanned range could silence a real
+  # An allowlist, config, or gate-script edit since the base could silence a real
   # finding, so it fails the lint until the captain approves it.
   # It applies once the base already has this gate; the commit that first adds
   # the gate cannot be compared against a gate that is not there yet.
   changed=
   ! git cat-file -e "$1:bin/fm-lint-secrets.sh" 2>/dev/null \
-    || changed=$(git diff --name-only "$1..HEAD" -- .gitleaksignore .gitleaks.toml gitleaks.toml bin/fm-lint-secrets.sh) || changed=
+    || changed=$({ git diff --name-only "$1" -- .gitleaksignore .gitleaks.toml gitleaks.toml bin/fm-lint-secrets.sh \
+      && git ls-files --others -- .gitleaksignore .gitleaks.toml gitleaks.toml bin/fm-lint-secrets.sh; }) || changed=
   if [ -n "$changed" ]; then
     printf 'fm-lint-secrets.sh: this branch changes the gitleaks allowlist, config, or this gate script:\n%s\n' "$changed" >&2
     printf 'An allowlist change needs the captain to approve this lint finding. Do not edit .gitleaksignore, gitleaks config, or bin/fm-lint-secrets.sh, or rewrite commits to silence gitleaks; escalate instead.\n' >&2
