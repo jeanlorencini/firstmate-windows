@@ -1217,6 +1217,71 @@ test_claude_secondmate_launch_omits_task_control_channel_authority() {
   pass "a persistent claude secondmate keeps its supervisor contract without a task-worker authority overlay"
 }
 
+test_claude_worker_launches_skip_operator_mcp_servers() {
+  local rec id sm out status launch row kind home_store dir_store chrome cfg n=0
+  local mcp_flags="--strict-mcp-config --mcp-config '{\"mcpServers\":{}}' "
+  # <kind>|<$HOME store>|<$CLAUDE_CONFIG_DIR store, empty leaves it unset>|<expect --chrome>
+  for row in \
+    'ship|{"claudeInChromeDefaultEnabled":true}||yes' \
+    'scout|{"claudeInChromeDefaultEnabled":true}||yes' \
+    'ship|{"claudeInChromeDefaultEnabled":false}||no' \
+    'scout|||no' \
+    'ship|{"claudeInChromeDefaultEnabled":"true"}||no' \
+    'ship|{"claudeInChromeDefaultEnabled":false}|{"claudeInChromeDefaultEnabled":true}|yes' \
+    'ship|{"claudeInChromeDefaultEnabled":true}|{}|no'; do
+    IFS='|' read -r kind home_store dir_store chrome <<EOF
+$row
+EOF
+    n=$((n + 1))
+    id=profile-claude-no-mcp-$n-z21c
+    rec=$(make_spawn_case "profile-claude-no-mcp-$n" claude "$id")
+    read_case_record "$rec"
+    mkdir -p "$HOME_DIR/user-home"
+    [ -z "$home_store" ] || printf '%s\n' "$home_store" > "$HOME_DIR/user-home/.claude.json"
+    cfg=
+    if [ -n "$dir_store" ]; then
+      cfg="$CASE_DIR/claude-work"
+      mkdir -p "$cfg"
+      printf '%s\n' "$dir_store" > "$cfg/.claude.json"
+    fi
+    if [ "$kind" = ship ]; then
+      out=$(FM_TEST_CLAUDE_CONFIG_DIR="$cfg" \
+        run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    else
+      out=$(FM_TEST_CLAUDE_CONFIG_DIR="$cfg" \
+        run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+    fi
+    status=$?
+    expect_code 0 "$status" "claude $kind spawn ($row) should succeed"$'\n'"$out"
+    launch=$(cat "$LAUNCH_LOG")
+    if [ "$chrome" = yes ]; then
+      assert_contains "$launch" "$mcp_flags--chrome " \
+        "claude $kind launch ($row) did not skip the operator's MCP servers while keeping Claude in Chrome"
+    else
+      assert_contains "$launch" "$mcp_flags" \
+        "claude $kind launch ($row) did not skip the operator's MCP servers"
+      assert_not_contains "$launch" "--chrome" \
+        "claude $kind launch ($row) enabled Claude in Chrome beyond the operator's default"
+    fi
+  done
+
+  id=profile-secondmate-no-mcp-z21c
+  rec=$(make_spawn_case profile-secondmate-no-mcp claude "$id")
+  read_case_record "$rec"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+  out=$(FM_TEST_CLAUDE_CONFIG_DIR="$CASE_DIR/claude-work" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "secondmate claude spawn should succeed"$'\n'"$out"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_not_contains "$launch" "--strict-mcp-config" \
+    "persistent secondmate launch lost the operator's MCP servers"
+  assert_not_contains "$launch" "--mcp-config" \
+    "persistent secondmate launch received a worker MCP override"
+  pass "claude ship and scout launches skip operator MCP servers and keep Claude in Chrome only when the operator's default enables it; a secondmate keeps them"
+}
+
 test_claude_long_launch_is_delivered_intact() {
   local rec id out status launch expected
   id=profile-claude-long-launch-z24
@@ -1686,7 +1751,7 @@ claude_expected_launch() {  # <launch> <home> <id> <permission-flag>
   [ "$(printf '%s' "$doorbell" | "$ROOT/bin/fm-operational-input.sh" doorbell-kind)" = launch-brief ] \
     || doorbell="not a launch-brief doorbell"
   quoted="'$(printf '%s' "$doorbell" | sed "s/'/'\\\\''/g")'"
-  printf '%s' "export COMPACT_ADVISER_DISABLE=1; $(ai_trailer_hooks_prefix "$2" "$3")env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude $4 $(claude_worker_add_dirs "$2" "$3")--settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' --disallowedTools AskUserQuestion $CLAUDE_CONTROL_CHANNEL_FLAG $quoted"
+  printf '%s' "export COMPACT_ADVISER_DISABLE=1; $(ai_trailer_hooks_prefix "$2" "$3")env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude $4 $(claude_worker_add_dirs "$2" "$3")--settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' --disallowedTools AskUserQuestion --strict-mcp-config --mcp-config '{\"mcpServers\":{}}' $CLAUDE_CONTROL_CHANNEL_FLAG $quoted"
 }
 
 test_claude_permission_mode_bypass_matches_absent_launch() {
@@ -1868,6 +1933,7 @@ test_non_claude_harness_ignores_claude_permission_mode
 test_non_claude_harness_ignores_config_dir
 test_claude_task_launch_carries_control_channel_authority
 test_claude_secondmate_launch_omits_task_control_channel_authority
+test_claude_worker_launches_skip_operator_mcp_servers
 test_claude_long_launch_is_delivered_intact
 test_claude_crewmate_launch_carries_the_attribution_policy
 test_keep_ai_trailers_omits_attribution_settings_and_strip_hooks
