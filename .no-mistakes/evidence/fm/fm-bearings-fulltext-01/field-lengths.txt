@@ -1,0 +1,3 @@
+cockpit-perm	name=71	name_full=103	doing=91	doing_full=134	doing_full_ends_ellipsis=false
+long-doing	name=47	name_full=47	doing=91	doing_full=501	doing_full_ends_ellipsis=true
+short-one	name=11	name_full=11	doing=13	doing_full=13	doing_full_ends_ellipsis=false

@@ -1,0 +1,42 @@
+schema: fm-bearings.v1
+home: Temp/fm-lab.WyJc40
+generated: "2026-10-14T05:18:23Z"
+prs: "not_requested (run: /bearings include PRs)"
+contributions: 
+  scope: owned contributions per home
+  known: 0
+  checked: 0
+  counts: 
+    captain: 0
+    fleet: 0
+    maintainer: 0
+    nobody: 0
+  complete: false
+  proven_clear: false
+  unmeasured_homes: 0
+  unreadable_records: 0
+  unmeasured: 0
+  stale_verdicts: 0
+  missing_verdicts: 0
+  captain_omitted: 0
+  captain: []
+in_flight[3]{id,kind,state,repo,name,doing}:
+  cockpit-perm,ship,unknown,firstmate,Investigar o PermissionError que deixa a fonte de dados do cockpit sem…,"working: Reproduzir o PermissionError ao abrir o arquivo de estado do cockpit enquanto o n…"
+  long-doing,ship,unknown,firstmate,Ship a task whose status line runs past the cap,"working: review round 2 is still collecting findings across every changed surface review r…"
+  short-one,ship,unknown,firstmate,Short title,"working: tiny"
+secondmates[1]{id,state,doing,provenance,freshness,age_seconds,contradiction,reason}:
+  (registry),unknown,registered secondmate table read timed out,registered-table,unavailable,null,false,registered secondmate table read timed out
+secondmate_reconcile: []
+decisions_open: []
+landed: []
+gates: []
+reports: []
+recorded_prs: []
+omitted[7]{surface,reveal}:
+  backlog item bodies,"--fields bodies"
+  task paths,"--fields paths"
+  watch/steer actions,"--fields actions"
+  healthy endpoint detail,"--fields endpoints"
+  full scout-report inventory,"--all-reports"
+  "secondmate registry unavailable: registered secondmate table read timed out",inspect data/secondmates.md
+  live PR discovery + checks,"--include-prs"
