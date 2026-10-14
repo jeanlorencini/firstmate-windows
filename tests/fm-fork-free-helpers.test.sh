@@ -316,6 +316,38 @@ SH
   pass "fm_file_contents_to reads a file as \$(cat) does and a lock cycle never forks cat"
 }
 
+test_watcher_health_check_never_forks_cat() {
+  local script="$TMP_ROOT/healthy.sh" shim="$TMP_ROOT/healthy-shim" log="$TMP_ROOT/healthy-cat.log"
+  mkdir -p "$shim" "$TMP_ROOT/healthy-state/.watch.lock"
+  cat > "$shim/cat" <<SH
+#!/bin/sh
+printf 'cat\n' >> "$log"
+exec $(command -v cat) "\$@"
+SH
+  chmod +x "$shim/cat"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-wake-lib.sh"
+st=$2 home=$1 watch=/fm/bin/fm-watch.sh
+printf '%s\n' "$$" > "$st/.watch.lock/pid"
+printf '%s\n' "$home" > "$st/.watch.lock/fm-home"
+printf '%s\n' "$watch" > "$st/.watch.lock/watcher-path"
+fm_pid_identity "$$" > "$st/.watch.lock/pid-identity" || printf 'no identity for this shell\n'
+touch "$st/.last-watcher-beat"
+PATH="$3:$PATH"
+: > "$4"
+fm_watcher_healthy "$st" "$watch" 300 "$home" || printf 'a live identity-matched watcher was not healthy\n'
+[ "$FM_WATCHER_HEALTHY_PID" = "$$" ] || printf 'healthy pid %s, want %s\n' "$FM_WATCHER_HEALTHY_PID" "$$"
+calls=$(grep -c . "$4" || true)
+[ "$calls" -eq 0 ] || printf 'a healthy-watcher check ran cat %s times\n' "$calls"
+printf 'other\n' > "$st/.watch.lock/pid-identity"
+! fm_watcher_healthy "$st" "$watch" 300 "$home" || printf 'a mismatched identity was healthy\n'
+rm -f "$st/.watch.lock/pid"
+! fm_watcher_healthy "$st" "$watch" 300 "$home" || printf 'a lock without a pid was healthy\n'
+SH
+  run_everywhere "healthy watcher check" "$script" "$TMP_ROOT/healthy-state" "$shim" "$log"
+  pass "fm_watcher_healthy recognizes a live watcher without forking cat and still rejects a mismatch"
+}
+
 test_helpers_assign_any_output_variable_name() {
   local script="$TMP_ROOT/names.sh"
   printf '42
@@ -692,6 +724,7 @@ else
   test_classify_stat_helpers_read_the_kernel_name_once
   test_backlog_record_guard_resolves_its_paths_in_one_perl
   test_file_contents_helper_matches_cat_and_lock_cycle_never_forks_it
+  test_watcher_health_check_never_forks_cat
   test_helpers_assign_any_output_variable_name
   test_spawn_shell_quote_round_trips_and_never_forks
   test_backlog_data_absolute_to_resolves_like_cd_and_pwd

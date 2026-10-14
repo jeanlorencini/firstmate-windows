@@ -139,7 +139,7 @@ bin/fm-wake-grant.sh	native-pi	identity=$(fm_pid_identity "$pid" 2>/dev/null) ||
 bin/fm-wake-grant.sh	native-pi	[ "$(fm_pid_identity "$pid" 2>/dev/null || true)" = "$identity" ] || exit 1
 bin/fm-wake-lib.sh	live	kill -0 "$pid" 2>/dev/null
 bin/fm-wake-lib.sh	live	if [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ]; then
-bin/fm-wake-lib.sh	live	stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+bin/fm-wake-lib.sh	live	fm_file_contents_to stat_line "$proc_root/$pid/stat"
 bin/fm-wake-lib.sh	live	cmdline_hex=$(od -An -v -tx1 "$proc_root/$pid/cmdline" 2>/dev/null | tr -d '[:space:]') || return 1
 bin/fm-wake-lib.sh	live	out=$(COLUMNS=10000 LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || return 1
 bin/fm-wake-lib.sh	recorded	current_identity=$(fm_pid_identity "$pid") || return 1
