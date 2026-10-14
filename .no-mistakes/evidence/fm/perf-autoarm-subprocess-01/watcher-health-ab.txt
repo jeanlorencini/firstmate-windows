@@ -1,0 +1,24 @@
+===== base (b02e30c)
+live watcher pid=49852: healthy=yes reported_pid=49852
+cat forks during one healthy check: 5
+avg ms per fm_watcher_healthy call (20 calls): 691
+avg ms per fm_pid_identity call (20 calls): 200
+CRLF pid file: healthy=yes
+adversarial mismatched identity: healthy=no
+adversarial other home lock: healthy=no
+adversarial stale beacon: healthy=no
+adversarial missing identity file: healthy=no
+adversarial dead watcher pid: healthy=no
+identity of nonexistent pid: refused
+===== target (8a2e0a3)
+live watcher pid=52155: healthy=yes reported_pid=52155
+cat forks during one healthy check: 0
+avg ms per fm_watcher_healthy call (20 calls): 217
+avg ms per fm_pid_identity call (20 calls): 125
+CRLF pid file: healthy=yes
+adversarial mismatched identity: healthy=no
+adversarial other home lock: healthy=no
+adversarial stale beacon: healthy=no
+adversarial missing identity file: healthy=no
+adversarial dead watcher pid: healthy=no
+identity of nonexistent pid: refused

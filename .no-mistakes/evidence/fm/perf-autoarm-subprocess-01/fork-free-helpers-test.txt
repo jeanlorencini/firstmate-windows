@@ -1,0 +1,4 @@
+not ok - path helpers differs under /usr/bin/bash (C):
+dirname //: helper /, command //
+basename //: helper /, command //
+dirname //a: helper /, command //

@@ -1,0 +1,13 @@
+ok - fm_watcher_healthy recognizes a live watcher without forking cat and still rejects a mismatch
+rc=0
+not ok - file contents helper differs under /usr/bin/bash (C):
+lock not acquired
+an uncontended lock cycle ran cat 2 times
+rc=1
+not ok - healthy watcher check differs under /usr/bin/bash (C):
+a healthy-watcher check ran cat 5 times
+base rc=1
+not ok - file contents helper differs under /usr/bin/bash (C):
+lock not acquired
+an uncontended lock cycle ran cat 2 times
+base rc=1
