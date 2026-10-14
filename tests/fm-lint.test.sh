@@ -261,6 +261,7 @@ STUB
 #   FM_TEST_GIT_DIFF_FILE        path to a file of NUL-separated changed paths
 fm_lint_stub_git() {
   local fakebin=$1
+  fm_lint_stub_gitleaks "$fakebin"
   cat > "$fakebin/git" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
