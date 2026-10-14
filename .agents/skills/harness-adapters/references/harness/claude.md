@@ -68,8 +68,9 @@ A `--secondmate` launch omits the statement because a secondmate operates under 
 
 ## Worker MCP servers
 
-A ship or scout launch passes `--strict-mcp-config --mcp-config '{"mcpServers":{}}' --chrome`, so the worker starts none of the operator's user-level, plugin, or claude.ai-connector MCP servers while in-process mods and Claude in Chrome stay available.
-Strict mode alone also drops Claude in Chrome, which `--chrome` restores regardless of the operator's Chrome default.
+A ship or scout launch passes `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`, so the worker ignores every MCP config source except that empty inline one: the operator's user-level, plugin, and claude.ai-connector servers and the target project's own `.mcp.json` and local-scope servers alike, while in-process mods stay available.
+Strict mode also drops Claude in Chrome, so the launch adds `--chrome` only when the worker's Claude store (`$CLAUDE_CONFIG_DIR/.claude.json` when a config dir is set, otherwise `$HOME/.claude.json`) sets `claudeInChromeDefaultEnabled` to `true`.
+A missing, unreadable, or malformed store, an absent key, any other value, or no `jq` omits `--chrome`, so a worker never gets more browser access than the operator's own default gave it.
 A `--secondmate` launch keeps the operator's full MCP surface because a secondmate is a primary.
 `launch_template()` in `../../../../../bin/fm-spawn.sh` owns the exact flags and rationale.
 
