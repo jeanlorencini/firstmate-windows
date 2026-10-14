@@ -1,0 +1,92 @@
+$ FM_HOME=<lab> bin/fm-bearings-snapshot.sh --json   (default bound; gate + whitespace status)
+{
+  "schema": "fm-bearings.v1",
+  "home": "Temp/fm-lab.TTOIM2",
+  "generated": "2026-10-14T12:25:06Z",
+  "prs": "not_requested (run: /bearings include PRs)",
+  "contributions": {
+    "scope": "owned contributions per home",
+    "known": 0,
+    "checked": 0,
+    "counts": {
+      "captain": 0,
+      "fleet": 0,
+      "maintainer": 0,
+      "nobody": 0
+    },
+    "complete": true,
+    "proven_clear": true,
+    "unmeasured_homes": 0,
+    "unreadable_records": 0,
+    "unmeasured": 0,
+    "stale_verdicts": 0,
+    "missing_verdicts": 0,
+    "captain_omitted": 0,
+    "captain": []
+  },
+  "in_flight": [
+    {
+      "id": "cockpit-perm",
+      "kind": "ship",
+      "state": "working",
+      "repo": "firstmate",
+      "name": "Investigar o PermissionError que deixa a fonte de dados do cockpit sem…",
+      "doing": "spaced status with tabs and runs of spaces",
+      "name_full": "Investigar o PermissionError que deixa a fonte de dados do cockpit sem atualizar no navegador (Windows)",
+      "doing_full": "spaced status with tabs and runs of spaces"
+    },
+    {
+      "id": "long-status",
+      "kind": "ship",
+      "state": "working",
+      "repo": "firstmate",
+      "name": "Short task",
+      "doing": "review round 2 is still collecting findings across every changed surface review round 2 is…",
+      "name_full": "Short task",
+      "doing_full": "review round 2 is still collecting findings across every changed surface review round 2 is still collecting findings across every changed surface review round 2 is still collecting findings across every changed surface review round 2 is still collecting findings across every changed surface review round 2 is still collecting findings across every changed surface review round 2 is still collecting findings across every changed surface review round 2 is still collecting findings across every chang…"
+    }
+  ],
+  "secondmates": [],
+  "secondmate_reconcile": [],
+  "decisions_open": [],
+  "landed": [],
+  "gates": [
+    {
+      "id": "legal-release",
+      "title": "Release approval for the long-running cockpit data source fi…",
+      "blocked_by": "external-legal",
+      "reason": "legal review",
+      "owner": "(main)",
+      "filed": null
+    }
+  ],
+  "reports": [],
+  "recorded_prs": [],
+  "omitted": [
+    {
+      "surface": "backlog item bodies",
+      "reveal": "--fields bodies"
+    },
+    {
+      "surface": "task paths",
+      "reveal": "--fields paths"
+    },
+    {
+      "surface": "watch/steer actions",
+      "reveal": "--fields actions"
+    },
+    {
+      "surface": "healthy endpoint detail",
+      "reveal": "--fields endpoints"
+    },
+    {
+      "surface": "full scout-report inventory",
+      "reveal": "--all-reports"
+    },
+    {
+      "surface": "live PR discovery + checks",
+      "reveal": "--include-prs"
+    }
+  ]
+}
+exit=0
