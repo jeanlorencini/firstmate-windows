@@ -134,7 +134,7 @@ A task moves through the same steps every time:
 ## Built for Windows
 
 The shared scripts in `bin/` are written for a Unix shell.
-Seven files in `bin/` load `platform/windows/overrides.sh` through one line each, and `platform/windows/env.sh` sets up every Git Bash the overlay reaches.
+Six files in `bin/` load `platform/windows/overrides.sh` through one line each, and `platform/windows/env.sh` sets up every Git Bash the overlay reaches.
 
 <table>
   <tr>
