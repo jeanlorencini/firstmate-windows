@@ -672,7 +672,30 @@ test_secondmate_home_spawn_publishes_its_summary_before_returning() {
   pass "a secondmate home's spawn still publishes its summary before returning"
 }
 
+# Teardown keeps state/<id>.spawn-stages for latency analysis, so a task id
+# reused later must not append its stages to the earlier task's lines.
+test_fresh_spawn_starts_its_stage_record_over() {
+  local rec out status stages
+  rec=$(make_spawn_case stages-fresh)
+  read_case_record "$rec"
+  stages="$HOME_DIR/state/$CASE_ID.spawn-stages"
+  mkdir -p "$HOME_DIR/state"
+  printf '1 earlier-task-stage\n' > "$stages"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "a fresh spawn over a kept stage record should succeed"
+  ! grep -q earlier-task-stage "$stages" \
+    || fail "a fresh spawn appended to an earlier task's stage record"
+  grep -q 'start relaunch=0' "$stages" \
+    || fail "a fresh spawn did not record its start stage"
+  grep -q ' spawned$' "$stages" \
+    || fail "a fresh spawn did not record its spawned stage"
+  pass "a fresh spawn starts its stage record over"
+}
+
 test_enabled_records_and_injects_identical_carrier_before_launch
+test_fresh_spawn_starts_its_stage_record_over
 test_plain_home_spawn_does_not_wait_for_an_in_flight_summary
 test_secondmate_home_spawn_publishes_its_summary_before_returning
 test_disabled_writes_and_injects_neither

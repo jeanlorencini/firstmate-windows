@@ -1522,8 +1522,9 @@ elif [ "$RELAUNCH" -eq 1 ]; then
 fi
 # Launch stage timing: one "<epoch> <stage>" line per milestone, appended to
 # state/<id>.spawn-stages so a slow or failed launch shows which stage held
-# the time across attempts. Names and times only, never pane content; a write
-# failure never changes the launch.
+# the time. A fresh spawn starts the file over and each relaunch appends to it;
+# teardown keeps it for latency analysis. Names and times only, never pane
+# content; a write failure never changes the launch.
 spawn_stage() { # <stage>
   printf '%s %s\n' "${EPOCHREALTIME:-$(date +%s)}" "$1" >>"$STATE/$ID.spawn-stages" 2>/dev/null || true
 }
@@ -1545,7 +1546,6 @@ spawn_treehouse_pool_snapshot() {
   done < <(git -C "$PROJ_ABS" worktree list --porcelain 2>/dev/null || true)
   printf 'pools=%s' "${out# }"
 }
-spawn_stage "start relaunch=$RELAUNCH kind=$KIND"
 # Role partition: spawning NEW work is MAIN-owned while attended. A relaunch of
 # an existing task is legitimate branch recovery (fm-control drives it through
 # this same entrypoint), so only a fresh spawn refuses the branch actor
@@ -1705,6 +1705,10 @@ if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   exit 1
 fi
 SPAWN_TASK_LOCK_HELD=1
+if [ "$RELAUNCH" -eq 0 ]; then
+  : >"$STATE/$ID.spawn-stages" 2>/dev/null || true
+fi
+spawn_stage "start relaunch=$RELAUNCH kind=$KIND"
 PROJ=
 ARG3=
 FIRSTMATE_HOME=
