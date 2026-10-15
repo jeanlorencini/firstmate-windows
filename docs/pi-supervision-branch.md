@@ -208,6 +208,13 @@ That clears both the latch and the provider-error streak and surfaces a one-line
 If a provider error settles after that report, the error wins instead: it re-latches the branch and extends the cooldown.
 A session replacement or branch model or effort change resets the recovery state immediately.
 
+#### Activation failure
+
+Each generation's ownership activation releases stray branch leases once, then records the branch owner through `bin/fm-wake-grant.sh activate`.
+Until activation succeeds the branch stays inactive, wakes stay with main, and the next boundary retries without repeating a lease release that already completed.
+A failed activation surfaces one warning per generation in the captain's UI.
+Supervision script failures and timeouts are counted per category in `state/.pi-branch-diagnostics.json`, which success never clears; `.pi/extensions/fm-branch-supervision.ts` owns its fields and what each category may record.
+
 ### Branch model and effort selection
 
 The same extension registers `/supervision-model`, which picks the branch's model and then its reasoning effort.
@@ -294,6 +301,7 @@ The captain saw that as a subsecond freeze every time a routine or captain-facin
 Subprocess work reached through Pi's asynchronous APIs is now awaited instead.
 `.pi/extensions/lib/fm-async-exec.ts` owns that awaited-spawn replacement.
 It preserves the status, captured-output, and failure semantics its callers used from the synchronous form.
+Every call is bounded: at its deadline the child's whole process tree is killed and the call takes the same failure branch a crash does, so a stalled script cannot hold a captain turn.
 
 ### The explicit delivery queue
 
