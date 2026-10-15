@@ -3733,6 +3733,39 @@ test_leaked_worktree_process_is_reaped() {
   pass "a leaked descendant process rooted under the task's worktree is reaped by teardown, not left surviving"
 }
 
+test_crafted_cwd_cannot_forge_a_reap() {
+  local case_dir rc victim injector evil wt
+  case_dir=$(make_case crafted-cwd-reap)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/outside"
+  wt=$(cd "$case_dir/wt" && pwd -P)
+
+  ( cd "$case_dir/outside" && exec sleep 300 ) &
+  victim=$!
+  disown
+  # A directory name holding a newline and a tab spells a whole scan record
+  # that puts the victim's pid under the worktree.
+  evil="$case_dir/ev"$'\n'"/proc/$victim"$'\t'"$wt"
+  mkdir -p "$evil"
+  ( cd "$evil" && exec sleep 300 ) &
+  injector=$!
+  disown
+  sleep 0.3
+  kill -0 "$victim" 2>/dev/null || fail "crafted-cwd-reap: setup victim did not start"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  if ! kill -0 "$victim" 2>/dev/null; then
+    kill -KILL "$injector" 2>/dev/null || true
+    fail "crafted-cwd-reap: a process outside the worktree was reaped through a crafted directory name"
+  fi
+  kill -KILL "$victim" "$injector" 2>/dev/null || true
+  expect_code 0 "$rc" "crafted-cwd-reap: teardown should succeed"
+  pass "a directory name that spells a scan record cannot make teardown reap a process outside the worktree"
+}
+
 test_leaked_tasktmp_process_is_reaped() {
   local case_dir rc pid
   case_dir=$(make_case leaked-tasktmp-reap)
@@ -3848,6 +3881,39 @@ test_lsof_absent_proc_cwd_fallback_reaps_and_reports() {
   assert_no_grep "process group" "$case_dir/stderr" \
     "leaked-proc-cwd-fallback: usable /proc should not fall through to the process-group path"
   pass "missing lsof with usable /proc reaps a worktree-rooted process and reports pid plus command line"
+}
+
+test_lsof_absent_unreadable_proc_refuses_before_removal() {
+  local case_dir rc path_without_lsof
+  case_dir=$(make_case unreadable-proc-refusal)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  path_without_lsof=$PATH
+  if command -v lsof >/dev/null 2>&1; then
+    path_without_lsof=$(make_path_without_lsof "$case_dir")
+  fi
+  PATH="$path_without_lsof" command -v lsof >/dev/null 2>&1 \
+    && fail "unreadable-proc-refusal: fixture path unexpectedly exposes lsof"
+  # A /proc that exists but shows no readable process, not even teardown's own.
+  mkdir -p "$case_dir/empty-proc"
+  cat > "$case_dir/fakebin/treehouse" <<EOF
+#!/usr/bin/env bash
+printf 'return\n' >> "$case_dir/treehouse.log"
+EOF
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+  FM_PROC_ROOT_OVERRIDE="$case_dir/empty-proc" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "unreadable-proc-refusal: teardown should refuse"
+  assert_grep "REFUSED: cannot determine leaked processes under $case_dir/wt for task-x1 (proc failed)" "$case_dir/stderr" \
+    "unreadable-proc-refusal: teardown did not explain the /proc refusal"
+  assert_present "$case_dir/wt" "unreadable-proc-refusal: teardown removed the worktree"
+  assert_present "$case_dir/state/task-x1.meta" "unreadable-proc-refusal: teardown removed task metadata"
+  assert_absent "$case_dir/treehouse.log" "unreadable-proc-refusal: teardown returned the worktree"
+  pass "missing lsof with an unreadable /proc refuses teardown rather than reading as no process left"
 }
 
 test_lsof_error_refuses_before_removal() {
@@ -4419,9 +4485,11 @@ test_not_found_status_after_abort_confirms_completion
 test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
+test_crafted_cwd_cannot_forge_a_reap
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_absent_proc_cwd_fallback_reaps_and_reports
+test_lsof_absent_unreadable_proc_refuses_before_removal
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped
