@@ -1517,6 +1517,14 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   echo "error: spawn refused: state directory does not exist at $STATE" >&2
   exit 1
 fi
+# Launch stage timing: one "<epoch> <stage>" line per milestone, appended to
+# state/<id>.spawn-stages so a slow or failed launch shows which stage held
+# the time across attempts. Names and times only, never pane content; a write
+# failure never changes the launch.
+spawn_stage() { # <stage>
+  printf '%s %s\n' "${EPOCHREALTIME:-$(date +%s)}" "$1" >>"$STATE/$ID.spawn-stages" 2>/dev/null || true
+}
+spawn_stage "start relaunch=$RELAUNCH kind=$KIND"
 # Role partition: spawning NEW work is MAIN-owned while attended. A relaunch of
 # an existing task is legitimate branch recovery (fm-control drives it through
 # this same entrypoint), so only a fresh spawn refuses the branch actor
@@ -3902,6 +3910,7 @@ fi
 # WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
 # worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
+spawn_stage "endpoint-ready backend=$BACKEND"
 spawn_send_text_line() { # <target> <text>
   case "$BACKEND" in
   tmux) fm_backend_tmux_send_text_line "$1" "$2" ;;
@@ -4301,6 +4310,7 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  spawn_stage treehouse-get-sent
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -4364,8 +4374,18 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       HERDR_PROJECTION_ABORT_CLEANUP=0
       rovo_endpoint_cleanup
     fi
+    # The herdr kill reports success even when it refuses an unverified close,
+    # so only the read-only presence probe says whether the pane is gone.
+    endpoint_gone=unknown
+    if [ "$BACKEND" = herdr ] && declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null; then
+      if fm_backend_herdr_endpoint_confirmed_gone "$T"; then endpoint_gone=yes; else endpoint_gone=no; fi
+    fi
+    spawn_stage "worktree-timeout endpoint-gone=$endpoint_gone"
+    [ "$endpoint_gone" != no ] ||
+      echo "error: the pane $T of task $ID is still open after this failure; close it before relaunching" >&2
     exit 1
   fi
+  spawn_stage worktree-confirmed
 
   validate_spawn_worktree "treehouse get" "$T"
 
@@ -4399,6 +4419,7 @@ fi
 # tab's original project directory.
 spawn_enter_recorded_worktree
 spawn_assert_agent_worktree
+spawn_stage worktree-ready
 
 # Pre-register Claude's workspace trust for the directory this launch starts in,
 # at the first point that directory is known and before any per-task state is
@@ -5587,4 +5608,5 @@ SPAWN_ACCOUNT=
 [ -z "$WORKER_ACCOUNT_PROVIDER" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT account_provider=$WORKER_ACCOUNT_PROVIDER"
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
 [ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
+spawn_stage spawned
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_ACCOUNT"

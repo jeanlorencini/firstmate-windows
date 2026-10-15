@@ -142,11 +142,16 @@ const config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
 const sessionsDir = join(state, "branch-session");
 const sessionPointer = join(state, ".branch-session");
 const mirrorCursorFile = join(state, ".branch-mirror-cursor");
-const promptScript = join(fmRoot, "bin", "fm-branch-prompt.sh");
-const afkContractScript = join(fmRoot, "bin", "fm-afk-contract.sh");
-const outcomeScript = join(fmRoot, "bin", "fm-branch-outcome.sh");
-const leaseScript = join(fmRoot, "bin", "fm-lease.sh");
-const wakeGrantScript = join(fmRoot, "bin", "fm-wake-grant.sh");
+// Each script finds its libraries from its own path, and fm-branch-outcome.sh
+// splits that path on "/" only, so the backslashes join() writes on Windows
+// sent it to source fm-wake-lib.sh from the wrong directory and every
+// reconcile failed. Git Bash runs a C:/ path as given.
+const binDir = process.platform === "win32" ? join(fmRoot, "bin").replaceAll("\\", "/") : join(fmRoot, "bin");
+const promptScript = `${binDir}/fm-branch-prompt.sh`;
+const afkContractScript = `${binDir}/fm-afk-contract.sh`;
+const outcomeScript = `${binDir}/fm-branch-outcome.sh`;
+const leaseScript = `${binDir}/fm-lease.sh`;
+const wakeGrantScript = `${binDir}/fm-wake-grant.sh`;
 const loadedMarker = join(state, ".pi-branch-extension-loaded");
 const modelPinFile = join(config, "supervision-branch-model");
 const effortPinFile = join(config, "supervision-branch-effort");
@@ -608,6 +613,12 @@ export default function (pi: ExtensionAPI) {
   // One-time per-generation activation work (marker write + stray branch
   // lease cleanup); ownership itself is re-read lazily at every boundary.
   let activatedGeneration = -1;
+  // The lease cleanup step of that activation, recorded on its own once it
+  // succeeds: a later activation step that fails (the wake-grant owner record)
+  // retries at the next boundary without repeating a bulk release that already
+  // completed. Forgotten whenever ownership is seen lost, so a regained lock
+  // releases again.
+  let leasesReleasedGeneration = -1;
   // Serializes branch work: mirror appends and wake turns run strictly in
   // dispatch order, one at a time (the branch runs drain -> handle -> ack
   // serially by design).
@@ -929,21 +940,29 @@ export default function (pi: ExtensionAPI) {
   // of a generation also writes the diagnostic marker and clears stray branch
   // leases from a prior generation.
   async function actingAsOwner(expectedGeneration = generation): Promise<boolean> {
-    if (!(await generationOwnsLock(expectedGeneration))) return false;
+    const owns = async (): Promise<boolean> => {
+      if (await generationOwnsLock(expectedGeneration)) return true;
+      if (leasesReleasedGeneration === expectedGeneration) leasesReleasedGeneration = -1;
+      return false;
+    };
+    if (!(await owns())) return false;
     if (activatedGeneration !== expectedGeneration) {
-      if (!(await releaseBranchLeases(expectedGeneration))) return false;
-      if (!(await generationOwnsLock(expectedGeneration))) return false;
+      if (leasesReleasedGeneration !== expectedGeneration) {
+        if (!(await releaseBranchLeases(expectedGeneration))) return false;
+        leasesReleasedGeneration = expectedGeneration;
+      }
+      if (!(await owns())) return false;
       if (!(await activateEligibleRowsOwner(state, wakeGrantScript, process.pid, String(expectedGeneration)))) {
         return false;
       }
-      if (!(await generationOwnsLock(expectedGeneration))) {
+      if (!(await owns())) {
         await deactivateEligibleRowsOwner(state, wakeGrantScript, process.pid, String(expectedGeneration));
         return false;
       }
       markLoaded();
       activatedGeneration = expectedGeneration;
     }
-    return generationOwnsLock(expectedGeneration);
+    return owns();
   }
 
   async function runOutcomeScript(args: string[]): Promise<{ ok: boolean; stdout: string; detail: string }> {

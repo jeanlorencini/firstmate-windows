@@ -4180,6 +4180,90 @@ EOF
   pass "replacement activation cleans old branch leases and retries failed cleanup"
 }
 
+test_async_exec_timeout_kills_the_process_tree() {
+  local dir out status
+  dir="$TMP_ROOT/async-exec-timeout"
+  mkdir -p "$dir"
+  LIB="$ROOT/.pi/extensions/lib/fm-async-exec.ts" PIDFILE="$dir/grandchild.pid" \
+    node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+const { runCommandAsync } = await import(pathToFileURL(process.env.LIB).href);
+const started = Date.now();
+const result = await runCommandAsync("bash", ["-c", `sleep 60 & echo $! > "${process.env.PIDFILE}"; wait`], { timeoutMs: 1500 });
+const elapsed = Date.now() - started;
+if (result.status !== null) throw new Error(`timed-out child reported status ${result.status}`);
+if (!result.stderr.includes("timed out after 1500 ms")) throw new Error(`no timeout error: ${result.stderr}`);
+if (elapsed > 10000) throw new Error(`timeout settled after ${elapsed} ms`);
+const pid = readFileSync(process.env.PIDFILE, "utf8").trim();
+let alive = true;
+for (let i = 0; i < 50 && alive; i += 1) {
+  alive = spawnSync("bash", ["-c", `kill -0 ${pid} 2>/dev/null`]).status === 0;
+  if (alive) await new Promise((resolve) => setTimeout(resolve, 100));
+}
+if (alive) throw new Error(`grandchild ${pid} survived the timeout`);
+const quick = await runCommandAsync("bash", ["-c", "echo ok"], { timeoutMs: 15000 });
+if (quick.status !== 0 || quick.stdout.trim() !== "ok") throw new Error(`bounded quick call failed: ${JSON.stringify(quick)}`);
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "a timed-out command must fail closed and leave no descendant: $out"
+  pass "runCommandAsync bounds a stalled command, kills its process tree, and keeps normal calls intact"
+}
+
+test_failed_activation_retry_does_not_repeat_completed_lease_release() {
+  local repo home root out status
+  repo="$TMP_ROOT/activation-retry-root"
+  home="$TMP_ROOT/activation-retry-home"
+  # Wrapper scripts in a copied root rather than a fake bash on PATH: Node on
+  # Windows never executes an extensionless shebang file as "bash".
+  root="$home/root"
+  mkdir -p "$home/state" "$home/config" "$root"
+  install_pi_branch_extension_fixture "$repo"
+  cp -R "$ROOT/bin" "$root/bin"
+  mv "$root/bin/fm-lease.sh" "$root/bin/fm-lease.real.sh"
+  mv "$root/bin/fm-wake-grant.sh" "$root/bin/fm-wake-grant.real.sh"
+  cat > "$root/bin/fm-lease.sh" <<'SH'
+#!/usr/bin/env bash
+echo release >> "$FM_TEST_RELEASE_LOG"
+exec bash "${BASH_SOURCE[0]%/*}/fm-lease.real.sh" "$@"
+SH
+  cat > "$root/bin/fm-wake-grant.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = activate ] && [ ! -e "$FM_TEST_FAIL_MARKER" ]; then
+  : > "$FM_TEST_FAIL_MARKER"
+  exit 1
+fi
+exec bash "${BASH_SOURCE[0]%/*}/fm-wake-grant.real.sh" "$@"
+SH
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+    FM_TEST_RELEASE_LOG="$home/release.log" \
+    FM_TEST_FAIL_MARKER="$home/state/activate-failed-once" DRIVER_PRELUDE="$DRIVER_PRELUDE" \
+    node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, home, defaultSessionCtx }; })()`);
+const { fire, home, defaultSessionCtx } = globalThis.__t;
+import { existsSync, readFileSync } from "node:fs";
+
+const releases = () => (existsSync(`${home}/release.log`) ? readFileSync(`${home}/release.log`, "utf8").trim().split("\n").length : 0);
+await fire("session_start", {}, defaultSessionCtx);
+if (existsSync(`${home}/state/.pi-branch-extension-loaded`)) throw new Error("failed activation wrote the marker");
+if (releases() !== 1) throw new Error(`first boundary ran ${releases()} lease releases, expected 1`);
+await fire("turn_end", {}, defaultSessionCtx);
+if (!existsSync(`${home}/state/.pi-branch-extension-loaded`)) throw new Error("next boundary did not retry the failed activation");
+if (releases() !== 1) throw new Error(`activation retry repeated the completed lease release (${releases()} runs)`);
+await fire("turn_end", {}, defaultSessionCtx);
+if (releases() !== 1) throw new Error(`an activated generation released leases again (${releases()} runs)`);
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "activation retry must not repeat a completed lease release: $out"
+  pass "a failed activation retries without repeating the completed lease release, once per generation"
+}
+
 test_cold_start_activates_after_lock_acquisition() {
   local repo home out status
   repo="$TMP_ROOT/coldstart-root"
@@ -5755,6 +5839,8 @@ test_extension_registered_provider_resolves_in_the_branch
 test_supervision_model_command_picks_effort_after_the_model
 test_unusable_model_pin_falls_back_to_main
 test_replacement_activation_cleans_leases_and_retries_failure
+test_failed_activation_retry_does_not_repeat_completed_lease_release
+test_async_exec_timeout_kills_the_process_tree
 test_cold_start_activates_after_lock_acquisition
 test_queued_actions_recheck_lock_ownership
 test_stale_generation_boundaries_are_side_effect_free
