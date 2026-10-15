@@ -182,3 +182,35 @@ if declare -F harness_process_verdict >/dev/null; then
     return 0
   }
 fi
+
+# Pi's extensions record node's Win32 process.pid (the fleet lock, the
+# wake-grant owner), which has no /proc entry, so upstream's identity read
+# found nothing: the branch's owner record was never written, its activation
+# never completed, and the fleet-lease release it gates repeated at every Pi
+# turn. A node started from Git Bash also has an MSYS pid whose /proc winpid
+# is that Win32 pid, so read the identity there. Only a pid absent from /proc
+# is translated, and only through exactly one match: an MSYS pid keeps its
+# meaning, and an ambiguous Win32 pid stays unresolved.
+# Sourced under `set -e` before fm-wake-lib too, so a missing function must
+# not fail the assignment.
+_fm_win_body=
+declare -F fm_pid_identity >/dev/null && _fm_win_body=$(declare -f fm_pid_identity)
+if [ -n "$_fm_win_body" ] && [[ $_fm_win_body != *_fm_win_upstream_pid_identity* ]]; then
+  eval "_fm_win_upstream_pid_identity ${_fm_win_body#fm_pid_identity }"
+  fm_pid_identity() {
+    local pid=$1 p w match=''
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    if [ -z "${FM_PROC_ROOT_OVERRIDE:-}" ] && [ ! -e "/proc/$pid" ]; then
+      for p in /proc/[0-9]*; do
+        w=''
+        { read -r w < "$p/winpid"; } 2>/dev/null
+        [ "$w" = "$pid" ] || continue
+        [ -z "$match" ] || return 1
+        match=${p#/proc/}
+      done
+      [ -z "$match" ] || pid=$match
+    fi
+    _fm_win_upstream_pid_identity "$pid"
+  }
+fi
+unset _fm_win_body

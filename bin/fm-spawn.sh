@@ -1241,7 +1241,10 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
-  [ -z "$SPAWN_HOME_SUMMARY_PID" ] || wait "$SPAWN_HOME_SUMMARY_PID" || true
+  if [ -n "$SPAWN_HOME_SUMMARY_PID" ]; then
+    wait "$SPAWN_HOME_SUMMARY_PID" || true
+    spawn_stage home-summary-waited
+  fi
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] &&
     [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] &&
     [ -n "$SPAWN_META_TMP" ] &&
@@ -1517,6 +1520,32 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   echo "error: spawn refused: state directory does not exist at $STATE" >&2
   exit 1
 fi
+# Launch stage timing: one "<epoch> <stage>" line per milestone, appended to
+# state/<id>.spawn-stages so a slow or failed launch shows which stage held
+# the time. A fresh spawn starts the file over and each relaunch appends to it;
+# teardown keeps it for latency analysis. Names and times only, never pane
+# content; a write failure never changes the launch.
+spawn_stage() { # <stage>
+  printf '%s %s\n' "${EPOCHREALTIME:-$(date +%s)}" "$1" >>"$STATE/$ID.spawn-stages" 2>/dev/null || true
+}
+# Read-only view of the Treehouse pools holding this project's worktrees:
+# "<pool>:mtime=<state mtime>,owned=<slot names with a live owner>" each. A
+# state that did not change across `treehouse get` says Treehouse never took a
+# slot. Never runs treehouse and never writes the pool.
+spawn_treehouse_pool_snapshot() {
+  local line pool seen=' ' out=''
+  while IFS= read -r line; do
+    case "$line" in "worktree "*) ;; *) continue ;; esac
+    pool=${line#worktree }
+    pool=${pool%/*}
+    pool=${pool%/*}
+    case "$seen" in *" $pool "*) continue ;; esac
+    seen="$seen$pool "
+    [ -f "$pool/treehouse-state.json" ] || continue
+    out="$out ${pool##*/}:mtime=$(fm_path_mtime "$pool/treehouse-state.json"),owned=$(jq -r '[.worktrees[]? | select(.owner_pid) | .name] | join("+")' "$pool/treehouse-state.json" 2>/dev/null)"
+  done < <(git -C "$PROJ_ABS" worktree list --porcelain 2>/dev/null || true)
+  printf 'pools=%s' "${out# }"
+}
 # Role partition: spawning NEW work is MAIN-owned while attended. A relaunch of
 # an existing task is legitimate branch recovery (fm-control drives it through
 # this same entrypoint), so only a fresh spawn refuses the branch actor
@@ -1676,6 +1705,10 @@ if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   exit 1
 fi
 SPAWN_TASK_LOCK_HELD=1
+if [ "$RELAUNCH" -eq 0 ]; then
+  : >"$STATE/$ID.spawn-stages" 2>/dev/null || true
+fi
+spawn_stage "start relaunch=$RELAUNCH kind=$KIND"
 PROJ=
 ARG3=
 FIRSTMATE_HOME=
@@ -3902,6 +3935,7 @@ fi
 # WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
 # worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
+spawn_stage "endpoint-ready backend=$BACKEND"
 spawn_send_text_line() { # <target> <text>
   case "$BACKEND" in
   tmux) fm_backend_tmux_send_text_line "$1" "$2" ;;
@@ -4300,7 +4334,13 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  spawn_stage "treehouse-pool-before $(spawn_treehouse_pool_snapshot)"
+  spawn_send_text_line "$WT_TARGET" 'treehouse get' || {
+    rc=$?
+    spawn_stage "treehouse-get-send-failed rc=$rc"
+    exit "$rc"
+  }
+  spawn_stage "treehouse-get-sent rc=0"
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -4337,7 +4377,9 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   candidate=""
   last_seen=""
   last_reason="the pane reported no path"
+  polls=0
   for _ in $(seq 1 60); do
+    polls=$((polls + 1))
     p=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$p" ] || last_seen="$p"
     if [ -n "$p" ] && spawn_worktree_isolated "$p"; then
@@ -4356,6 +4398,18 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   done
   if [ -z "$WT" ]; then
     echo "error: treehouse get did not enter an isolated worktree within 60s (last seen '${last_seen:-none}': $last_reason; spawning project '$PROJ_ABS'); inspect window $T" >&2
+    # Which hypothesis stays plausible: a pool state that never changed points
+    # at a command that did not run or did not reach Treehouse; a changed pool
+    # with a non-shell foreground points at Treehouse still working; a changed
+    # pool with a shell foreground and the project cwd points at the cwd read.
+    # Indications only, read before the endpoint cleanup below closes the pane.
+    # The foreground is a category (agent|shell|other|unreadable), never argv.
+    foreground_state=unknown
+    if [ "$BACKEND" = herdr ] && fm_backend_herdr_parse_target "$T" 2>/dev/null; then
+      foreground_state=$(fm_backend_herdr_pane_process_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null) ||
+        foreground_state=unreadable
+    fi
+    spawn_stage "worktree-timeout polls=$polls herdr-cwd=${last_seen:-none} foreground=${foreground_state:-unreadable} $(spawn_treehouse_pool_snapshot)"
     # Projection abort cleanup refuses a focus-unsafe close when pane get cannot
     # verify the exact pane, which left orphan Herdr panes after this timeout.
     # The ordinary endpoint kill falls back to an explicit close, so use it here
@@ -4364,8 +4418,18 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       HERDR_PROJECTION_ABORT_CLEANUP=0
       rovo_endpoint_cleanup
     fi
+    # The herdr kill reports success even when it refuses an unverified close,
+    # so only the read-only presence probe says whether the pane is gone.
+    endpoint_gone=unknown
+    if [ "$BACKEND" = herdr ] && declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null; then
+      if fm_backend_herdr_endpoint_confirmed_gone "$T"; then endpoint_gone=yes; else endpoint_gone=no; fi
+    fi
+    spawn_stage "worktree-timeout-cleanup endpoint-gone=$endpoint_gone"
+    [ "$endpoint_gone" != no ] ||
+      echo "error: the pane $T of task $ID is still open after this failure; close it before relaunching" >&2
     exit 1
   fi
+  spawn_stage worktree-confirmed
 
   validate_spawn_worktree "treehouse get" "$T"
 
@@ -4399,6 +4463,7 @@ fi
 # tab's original project directory.
 spawn_enter_recorded_worktree
 spawn_assert_agent_worktree
+spawn_stage worktree-ready
 
 # Pre-register Claude's workspace trust for the directory this launch starts in,
 # at the first point that directory is known and before any per-task state is
@@ -5095,11 +5160,20 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   SPAWN_TASK_SET_LOCK_HELD=0
   fm_lock_release "$SPAWN_TASK_SET_LOCK"
 fi
-# The summary must name this task before the spawn returns, but nothing below
-# reads it, so it is computed alongside launch delivery and the backlog commit,
-# and spawn_abort_cleanup waits for it on every exit.
-"$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort </dev/null &
-SPAWN_HOME_SUMMARY_PID=$!
+# A secondmate home's parent reads this summary, so there it must name this
+# task before the spawn returns; nothing below reads it, so it is computed
+# alongside launch delivery and the backlog commit, and spawn_abort_cleanup
+# waits for it on every exit. A home with neither secondmate marker has no such
+# reader, and waiting there held every dispatch behind the watcher's in-flight
+# publication plus this one, up to the refresh deadline: start it detached and
+# skip it while another publication runs (the watcher republishes later).
+if [ -e "$FM_HOME/$SUB_HOME_MARKER" ] || [ -L "$FM_HOME/$SUB_HOME_MARKER" ] ||
+  [ -e "$FM_HOME/.fm-secondmate-parent" ] || [ -L "$FM_HOME/.fm-secondmate-parent" ]; then
+  "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort </dev/null &
+  SPAWN_HOME_SUMMARY_PID=$!
+else
+  FM_HOME_SUMMARY_IF_IDLE=1 "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort </dev/null >/dev/null 2>&1 &
+fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
@@ -5417,6 +5491,7 @@ if ! (umask 077 && printf '%s\n' "$LAUNCH" >"$LAUNCH_STAGE" &&
   echo "error: could not stage the launch command at $LAUNCH_FILE" >&2
   exit 1
 fi
+spawn_stage launch-start
 sleep 0.3
 SPAWN_LAUNCH_SENT=1
 if [ "$BACKEND" = herdr ]; then
@@ -5522,6 +5597,7 @@ if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=1
 fi
+spawn_stage launch-delivered
 SPAWN_DEFERRED_SIGNAL=
 if [ "$BACKLOG_TRANSITION" = 1 ]; then
   trap 'SPAWN_DEFERRED_SIGNAL=HUP' HUP
@@ -5587,4 +5663,5 @@ SPAWN_ACCOUNT=
 [ -z "$WORKER_ACCOUNT_PROVIDER" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT account_provider=$WORKER_ACCOUNT_PROVIDER"
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
 [ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
+spawn_stage spawned
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_ACCOUNT"

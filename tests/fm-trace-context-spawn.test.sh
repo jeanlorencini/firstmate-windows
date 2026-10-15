@@ -183,6 +183,25 @@ EOF
 meta_traceparent() { sed -n 's/^traceparent=//p' "$1"; }
 injected_traceparent() { sed -n 's/^export TRACEPARENT=//p' "$1"; }
 
+summary_names() {  # <home> <id>
+  jq -e --arg id "$2" '
+    .schema == "fm-secondmate-home-summary.v1"
+    and any(.endpoints[]; .id == $id)
+  ' "$1/state/home-summary.json" >/dev/null 2>&1
+}
+
+# A home with no secondmate marker publishes its summary detached, after the
+# spawn has returned.
+wait_for_summary_names() {  # <home> <id>
+  local i=0
+  while [ "$i" -lt 600 ]; do
+    summary_names "$1" "$2" && return 0
+    sleep 0.2
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Two-level primary -> secondmate -> worker regression for the FM_TRACE_CONTEXT
 # effective override. Drives bin/fm-spawn.sh TWICE against real homes and a real
 # worktree: first the primary launches a secondmate (capturing the exact env the
@@ -277,10 +296,7 @@ test_enabled_records_and_injects_identical_carrier_before_launch() {
   expect_code 0 "$status" "enabled trace-context spawn should succeed"
   assert_contains "$out" "spawned $CASE_ID" "enabled spawn should report success"
   meta="$HOME_DIR/state/$CASE_ID.meta"
-  jq -e --arg id "$CASE_ID" '
-    .schema == "fm-secondmate-home-summary.v1"
-    and any(.endpoints[]; .id == $id)
-  ' "$HOME_DIR/state/home-summary.json" >/dev/null \
+  wait_for_summary_names "$HOME_DIR" "$CASE_ID" \
     || fail "successful task spawn did not publish the task in the home summary ledger"
 
   mtp=$(meta_traceparent "$meta")
@@ -601,7 +617,87 @@ test_secondmate_carrier_and_snapshot_share_one_decision() {
   pass "secondmate carrier and FM_TRACE_CONTEXT snapshot always agree, both derived from one frozen decision (file-decided path)"
 }
 
+# Only a parent reads a home's summary, and only a secondmate home has one. A
+# plain home's spawn queued behind the watcher's in-flight publication and then
+# ran its own before returning, holding every dispatch up to the 60 s refresh
+# deadline after the worker already had its prompt.
+test_plain_home_spawn_does_not_wait_for_an_in_flight_summary() {
+  local rec out status holder marker i alive
+  rec=$(make_spawn_case summary-plain)
+  read_case_record "$rec"
+  marker="$TMP_ROOT/summary-plain-held"
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    fm_lock_acquire_wait "$2/state/.home-summary-refresh.lock"
+    : > "$3"
+    trap '\''kill $! 2>/dev/null; exit 0'\'' TERM
+    sleep 120 & wait
+  ' _ "$ROOT" "$HOME_DIR" "$marker" &
+  holder=$!
+  i=0
+  while [ ! -e "$marker" ] && [ "$i" -lt 200 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -e "$marker" ] || fail "could not hold the summary publication lock"
+
+  # A deadline past the hold, so a spawn that waits can only return after it.
+  out=$(export FM_HOME_SUMMARY_TIMEOUT=600
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
+  status=$?
+  kill -0 "$holder" 2>/dev/null; alive=$?
+  kill "$holder" 2>/dev/null
+  wait "$holder" 2>/dev/null
+  expect_code 0 "$status" "a plain-home spawn should succeed while a publication runs"
+  assert_contains "$out" "spawned $CASE_ID" "the plain-home spawn should report success"
+  [ "$alive" -eq 0 ] || fail "the plain-home spawn returned only after the in-flight publication ended"
+  ! grep -q home-summary-waited "$HOME_DIR/state/$CASE_ID.spawn-stages" \
+    || fail "the plain-home spawn waited on its summary publication"
+  pass "a plain home's spawn returns without waiting on an in-flight summary publication"
+}
+
+test_secondmate_home_spawn_publishes_its_summary_before_returning() {
+  local rec out status
+  rec=$(make_spawn_case summary-marked)
+  read_case_record "$rec"
+  printf 'summary-marked\n' > "$HOME_DIR/.fm-secondmate-home"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "a secondmate-home spawn should succeed"
+  summary_names "$HOME_DIR" "$CASE_ID" \
+    || fail "a secondmate home's spawn returned before its summary named the task"
+  grep -q home-summary-waited "$HOME_DIR/state/$CASE_ID.spawn-stages" \
+    || fail "a secondmate home's spawn did not wait on its summary publication"
+  pass "a secondmate home's spawn still publishes its summary before returning"
+}
+
+# Teardown keeps state/<id>.spawn-stages for latency analysis, so a task id
+# reused later must not append its stages to the earlier task's lines.
+test_fresh_spawn_starts_its_stage_record_over() {
+  local rec out status stages
+  rec=$(make_spawn_case stages-fresh)
+  read_case_record "$rec"
+  stages="$HOME_DIR/state/$CASE_ID.spawn-stages"
+  mkdir -p "$HOME_DIR/state"
+  printf '1 earlier-task-stage\n' > "$stages"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "a fresh spawn over a kept stage record should succeed"
+  ! grep -q earlier-task-stage "$stages" \
+    || fail "a fresh spawn appended to an earlier task's stage record"
+  grep -q 'start relaunch=0' "$stages" \
+    || fail "a fresh spawn did not record its start stage"
+  grep -q ' spawned$' "$stages" \
+    || fail "a fresh spawn did not record its spawned stage"
+  pass "a fresh spawn starts its stage record over"
+}
+
 test_enabled_records_and_injects_identical_carrier_before_launch
+test_fresh_spawn_starts_its_stage_record_over
+test_plain_home_spawn_does_not_wait_for_an_in_flight_summary
+test_secondmate_home_spawn_publishes_its_summary_before_returning
 test_disabled_writes_and_injects_neither
 test_failed_delivery_omits_metadata_and_still_launches
 test_unsafe_delivery_refuses_to_append_launch

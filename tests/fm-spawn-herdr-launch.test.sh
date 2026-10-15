@@ -132,6 +132,7 @@ write_settle_timeout_step() {  # <file>
   {
     printf '%s\n' 'set -u' 'trap '\''printf "abort-cleanup=%s\n" "$HERDR_PROJECTION_ABORT_CLEANUP"'\'' EXIT'
     printf '%s\n' 'rovo_endpoint_cleanup() { printf "endpoint-closed=%s\n" "$T"; }'
+    printf '%s\n' 'spawn_stage() { :; }' 'spawn_treehouse_pool_snapshot() { :; }'
     awk '/treehouse get did not enter an isolated worktree within/{on=1} on{print} on && /^    exit 1$/{exit}' "$ROOT/bin/fm-spawn.sh"
   } > "$1"
   grep -q 'exit 1' "$1" || fail "the settle timeout refusal was not found in fm-spawn.sh"
@@ -148,7 +149,7 @@ test_settle_timeout_closes_the_projected_herdr_pane() {
   write_settle_timeout_step "$step"
   for backend in herdr tmux; do
     if out=$(BACKEND=$backend T=fmtest:w1:p1 HERDR_PROJECTION_ABORT_CLEANUP=1 \
-      WT='' PROJ_ABS="$dir" last_seen="$dir" last_reason="it is the spawning project itself" \
+      WT='' PROJ_ABS="$dir" last_seen="$dir" last_reason="it is the spawning project itself" polls=30 \
       bash "$step" 2>&1); then
       fail "the $backend settle timeout must still refuse the spawn: $out"
     fi

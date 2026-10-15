@@ -142,12 +142,18 @@ const config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
 const sessionsDir = join(state, "branch-session");
 const sessionPointer = join(state, ".branch-session");
 const mirrorCursorFile = join(state, ".branch-mirror-cursor");
-const promptScript = join(fmRoot, "bin", "fm-branch-prompt.sh");
-const afkContractScript = join(fmRoot, "bin", "fm-afk-contract.sh");
-const outcomeScript = join(fmRoot, "bin", "fm-branch-outcome.sh");
-const leaseScript = join(fmRoot, "bin", "fm-lease.sh");
-const wakeGrantScript = join(fmRoot, "bin", "fm-wake-grant.sh");
+// Each script finds its libraries from its own path, and fm-branch-outcome.sh
+// splits that path on "/" only, so the backslashes join() writes on Windows
+// sent it to source fm-wake-lib.sh from the wrong directory and every
+// reconcile failed. Git Bash runs a C:/ path as given.
+const binDir = process.platform === "win32" ? join(fmRoot, "bin").replaceAll("\\", "/") : join(fmRoot, "bin");
+const promptScript = `${binDir}/fm-branch-prompt.sh`;
+const afkContractScript = `${binDir}/fm-afk-contract.sh`;
+const outcomeScript = `${binDir}/fm-branch-outcome.sh`;
+const leaseScript = `${binDir}/fm-lease.sh`;
+const wakeGrantScript = `${binDir}/fm-wake-grant.sh`;
 const loadedMarker = join(state, ".pi-branch-extension-loaded");
+const diagnosticsFile = join(state, ".pi-branch-diagnostics.json");
 const modelPinFile = join(config, "supervision-branch-model");
 const effortPinFile = join(config, "supervision-branch-effort");
 
@@ -335,8 +341,59 @@ function modelLabel(model: { provider: string; id: string }): string {
   return `${model.provider}/${model.id}`;
 }
 
+// Supervision script failures are fail-closed and retried at the next boundary,
+// so a later success would hide them. This file keeps, per fixed category, how
+// often one happened and when last, plus the last failure itself; success
+// never clears it, so failures stay countable afterwards. The fixed category
+// set bounds its size. `error` is the first stderr line, at most 200
+// characters, and callers pass it only for scripts whose stderr is Firstmate's
+// own fixed messages - never outcome text, prompts, or terminal content.
+type SupervisionFailureCategory = "activation" | "lease-release" | "outcome-store" | "timeout";
+const SUPERVISION_FAILURE_CATEGORIES: readonly SupervisionFailureCategory[] = [
+  "activation",
+  "lease-release",
+  "outcome-store",
+  "timeout",
+];
+
+function firstErrorLine(stderr: string): string {
+  return (stderr.trim().split("\n")[0] ?? "").slice(0, 200);
+}
+
+function recordSupervisionFailure(
+  category: SupervisionFailureCategory,
+  step: string,
+  status: number | null,
+  error = "",
+): void {
+  try {
+    let previous: { counts?: Record<string, { count?: unknown }> } = {};
+    try {
+      previous = JSON.parse(readFileSync(diagnosticsFile, "utf8"));
+    } catch {
+      previous = {};
+    }
+    const at = new Date().toISOString();
+    const counts: Record<string, { count: number; last_at: string }> = {};
+    for (const known of SUPERVISION_FAILURE_CATEGORIES) {
+      const entry = previous.counts?.[known] as { count?: unknown; last_at?: unknown } | undefined;
+      const count = Number(entry?.count);
+      if (Number.isSafeInteger(count) && count > 0 && typeof entry?.last_at === "string") {
+        counts[known] = { count, last_at: entry.last_at };
+      }
+    }
+    counts[category] = { count: (counts[category]?.count ?? 0) + 1, last_at: at };
+    const tmp = `${diagnosticsFile}.${process.pid}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify({ counts, last: { category, step, status, at, error } })}\n`);
+    renameSync(tmp, diagnosticsFile);
+  } catch {
+    // Diagnostics only; never turn a recorded failure into a second one.
+  }
+}
+
 async function parentPid(pid: string): Promise<string> {
   const result = await runCommandAsync("ps", ["-o", "ppid=", "-p", pid]);
+  if (result.timedOut) recordSupervisionFailure("timeout", "ps ppid", null);
   if (result.status !== 0) return "";
   return result.stdout.trim();
 }
@@ -608,6 +665,16 @@ export default function (pi: ExtensionAPI) {
   // One-time per-generation activation work (marker write + stray branch
   // lease cleanup); ownership itself is re-read lazily at every boundary.
   let activatedGeneration = -1;
+  // The lease cleanup step of that activation, recorded on its own once it
+  // succeeds: a later activation step that fails (the wake-grant owner record)
+  // retries at the next boundary without repeating a bulk release that already
+  // completed. Forgotten whenever ownership is seen lost, so a regained lock
+  // releases again.
+  let leasesReleasedGeneration = -1;
+  // Why this generation's activation last failed, shown once per generation
+  // at the next boundary that has the captain's UI; cleared on success.
+  let activationFailure: { generation: number; reason: string } | null = null;
+  let activationNoticeGeneration = -1;
   // Serializes branch work: mirror appends and wake turns run strictly in
   // dispatch order, one at a time (the branch runs drain -> handle -> ack
   // serially by design).
@@ -921,7 +988,28 @@ export default function (pi: ExtensionAPI) {
       cwd: fmRoot,
       env: { ...scriptEnv, FM_SUPERVISION_ACTOR: "branch" },
     });
+    if (result.status !== 0) {
+      const error = firstErrorLine(result.stderr);
+      recordSupervisionFailure(result.timedOut ? "timeout" : "lease-release", "fm-lease.sh release-actor", result.status, error);
+      activationFailure = {
+        generation: expectedGeneration,
+        reason: `the branch lease release failed${error ? ` (${error})` : ""}`,
+      };
+    }
     return result.status === 0;
+  }
+
+  // One warning per generation, and only for an activation that failed: an
+  // inactive branch leaves every wake with main, which the captain should
+  // know, while every later boundary of the same generation stays quiet.
+  function noticeActivationFailure(ctx: unknown, noticeGeneration: number): void {
+    if (!activationFailure || activationFailure.generation !== noticeGeneration) return;
+    if (activationNoticeGeneration === noticeGeneration) return;
+    activationNoticeGeneration = noticeGeneration;
+    (ctx as { ui?: { notify?: (message: string, type?: "info" | "warning" | "error") => void } } | undefined)?.ui?.notify?.(
+      `Supervision branch is inactive for this session: ${activationFailure.reason}. Wakes stay with main. Failure counts: state/.pi-branch-diagnostics.json`,
+      "warning",
+    );
   }
 
   // Lazy, per-action ownership evaluation (see the header). Returns true only
@@ -929,21 +1017,47 @@ export default function (pi: ExtensionAPI) {
   // of a generation also writes the diagnostic marker and clears stray branch
   // leases from a prior generation.
   async function actingAsOwner(expectedGeneration = generation): Promise<boolean> {
-    if (!(await generationOwnsLock(expectedGeneration))) return false;
+    const owns = async (): Promise<boolean> => {
+      if (await generationOwnsLock(expectedGeneration)) return true;
+      if (leasesReleasedGeneration === expectedGeneration) leasesReleasedGeneration = -1;
+      return false;
+    };
+    if (!(await owns())) return false;
     if (activatedGeneration !== expectedGeneration) {
-      if (!(await releaseBranchLeases(expectedGeneration))) return false;
-      if (!(await generationOwnsLock(expectedGeneration))) return false;
-      if (!(await activateEligibleRowsOwner(state, wakeGrantScript, process.pid, String(expectedGeneration)))) {
-        return false;
+      if (leasesReleasedGeneration !== expectedGeneration) {
+        if (!(await releaseBranchLeases(expectedGeneration))) return false;
+        leasesReleasedGeneration = expectedGeneration;
       }
-      if (!(await generationOwnsLock(expectedGeneration))) {
+      if (!(await owns())) return false;
+      const activated = await activateEligibleRowsOwner(
+        state,
+        wakeGrantScript,
+        process.pid,
+        String(expectedGeneration),
+        (result) => {
+          const error = firstErrorLine(result.stderr);
+          recordSupervisionFailure(
+            result.timedOut ? "timeout" : "activation",
+            "fm-wake-grant.sh activate",
+            result.status,
+            error,
+          );
+          activationFailure = {
+            generation: expectedGeneration,
+            reason: error || `fm-wake-grant.sh activate exited ${result.status ?? "without a status"}`,
+          };
+        },
+      );
+      if (!activated) return false;
+      if (!(await owns())) {
         await deactivateEligibleRowsOwner(state, wakeGrantScript, process.pid, String(expectedGeneration));
         return false;
       }
       markLoaded();
       activatedGeneration = expectedGeneration;
+      activationFailure = null;
     }
-    return generationOwnsLock(expectedGeneration);
+    return owns();
   }
 
   async function runOutcomeScript(args: string[]): Promise<{ ok: boolean; stdout: string; detail: string }> {
@@ -952,6 +1066,8 @@ export default function (pi: ExtensionAPI) {
       env: scriptEnv,
     });
     if (result.status === 0) return { ok: true, stdout: (result.stdout || "").trim(), detail: "" };
+    // Status only: this store's stderr can quote outcome text.
+    recordSupervisionFailure(result.timedOut ? "timeout" : "outcome-store", `fm-branch-outcome.sh ${args[0] ?? ""}`, result.status);
     return {
       ok: false,
       stdout: "",
@@ -1285,6 +1401,7 @@ export default function (pi: ExtensionAPI) {
       env: scriptEnv,
       maxBuffer: 4 * 1024 * 1024,
     });
+    if (prompt.timedOut) recordSupervisionFailure("timeout", "fm-branch-prompt.sh", null);
     if (prompt.status !== 0 || !prompt.stdout || prompt.stdout.length < 1024) {
       throw new Error(
         `fm-branch-prompt.sh did not produce a usable branch prompt (status=${prompt.status ?? "none"}): ${(prompt.stderr || "").trim()}`,
@@ -1465,6 +1582,7 @@ ${context.command}
     let readback = "";
     try {
       const rendered = await runCommandAsync("bash", [afkContractScript, "readback"], { cwd: fmRoot, env: scriptEnv });
+      if (rendered.timedOut) recordSupervisionFailure("timeout", "fm-afk-contract.sh readback", null);
       if (rendered.status === 0) readback = rendered.stdout || "";
     } catch {
       readback = "";
@@ -1738,6 +1856,7 @@ ${context.command}
     // A verdict about a generation that has since been replaced says nothing
     // about the new one, so it neither breaks the branch nor flushes a mirror.
     if (turnGeneration !== generation) return;
+    noticeActivationFailure(ctx, turnGeneration);
     if (reconciled === "not-owner") return;
     if (reconciled === "failed") {
       branchBroken = "could not reconcile unread supervision outcomes into main";
@@ -1784,6 +1903,7 @@ ${context.command}
     if (failed && startedGeneration === generation) {
       branchBroken = "could not reconcile unread supervision outcomes into main";
     }
+    if (startedGeneration === generation) noticeActivationFailure(ctx, startedGeneration);
   });
 
   // Pi emits this for /model, Ctrl+P cycling, and session restore, so it is

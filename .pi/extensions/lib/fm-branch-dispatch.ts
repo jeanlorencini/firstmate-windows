@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { runCommandAsync } from "./fm-async-exec.ts";
+import { type AsyncExecResult, runCommandAsync } from "./fm-async-exec.ts";
 
 // Shared wake-dispatch handshake between the Pi watcher extension (the
 // dispatcher) and the supervision-branch extension (the handler), carried over
@@ -648,6 +648,7 @@ async function runGrantScript(
   state: string,
   grantScript: string,
   args: readonly string[],
+  failure?: (result: AsyncExecResult) => void,
 ): Promise<number | null> {
   const result = await runCommandAsync("bash", [grantScript, ...args], {
     env: {
@@ -657,16 +658,20 @@ async function runGrantScript(
       FM_WAKE_QUEUE_LOCK: `${state}/.wake-queue.lock`,
     },
   });
+  if (result.status !== 0) failure?.(result);
   return result.status;
 }
 
+// `failure` sees the script's result when activation fails, so the caller can
+// say why the branch stayed inactive; the verdict itself is unchanged.
 export async function activateEligibleRowsOwner(
   state: string,
   grantScript: string,
   ownerPid: number,
   generation: string,
+  failure?: (result: AsyncExecResult) => void,
 ): Promise<boolean> {
-  return (await runGrantScript(state, grantScript, ["activate", String(ownerPid), generation])) === 0;
+  return (await runGrantScript(state, grantScript, ["activate", String(ownerPid), generation], failure)) === 0;
 }
 
 export async function writeEligibleRowsSnapshot(
