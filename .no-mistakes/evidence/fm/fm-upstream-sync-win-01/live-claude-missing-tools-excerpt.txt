@@ -1,0 +1,37 @@
+# Live Claude primary (claude -p, real tracked .claude/settings.json hooks) in disposable lab FM_HOME, clone of b2cdfea
+# claude --version: 2.1.300 (Claude Code)
+
+## SessionStart digest (fm-session-start.sh) - LOCK + BOOTSTRAP sections
+LOCK
+--------------------------------------------------------------------------------
+lock acquired: harness pid 364
+
+BOOTSTRAP
+--------------------------------------------------------------------------------
+MISSING: tmux (install: brew install tmux  # or the platform's package manager)
+MISSING: chrome-devtools-axi (install: npm install -g chrome-devtools-axi && chrome-devtools-axi setup hooks)
+
+WAKE QUEUE
+
+## Turn 1 assistant reply
+READY
+
+## Stop hook feedback delivered to the model (fm-turnend-guard.sh --claude, exit 2)
+Stop hook feedback:
+[[ -z "${GROK_AGENT:-}${GROK_HOOK_EVENT:-}" ] || exit 0; exec "$CLAUDE_PROJECT_DIR"/bin/fm-turnend-guard.sh --claude]: ●  THE CAPTAIN HAS NOT BEEN TOLD ABOUT MISSING TOOLS
+●  Session start found these tools missing and your reply did not name them: tmux chrome-devtools-axi
+●  Tell the captain now, per the bootstrap-diagnostics skill: each missing tool, what it is for, and the install command the digest printed for it.
+●  Then ask for consent to install them; do not install anything before the captain approves.
+
+
+## Turn 2 assistant reply (final result)
+subtype=success num_turns=2
+Captain, session start found two tools missing:
+
+- **tmux** runs workers in terminal sessions so they can be supervised. Install: `brew install tmux`, or your platform's package manager.
+- **chrome-devtools-axi** handles browser work. Install: `npm install -g chrome-devtools-axi && chrome-devtools-axi setup hooks`
+
+Do you want me to install them? I won't install anything until you say yes.
+
+## Lab state after session
+state/.captain-missing-tools present? no (consumed by the first reply)

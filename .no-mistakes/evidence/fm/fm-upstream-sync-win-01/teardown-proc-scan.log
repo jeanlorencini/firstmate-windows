@@ -1,0 +1,16 @@
+open /c/Users/loren/.no-mistakes/worktrees/be9d69754c83/01M4YFVFWQ6JCD7TFK2TCHM4DR/platform/windows/../..: S-1-5-21-483750937-1945151441-3185177221-1003 A;OICIID;0x1200a9
+### fm-teardown.sh task-x1 with FM_PROC_ROOT_OVERRIDE=<empty dir>, no lsof: exit=1
+REFUSED: cannot determine leaked processes under <case>/wt for task-x1 (proc failed); preserving the worktree/tasktmp for manual inspection or retry.
+still present: <case>/state/task-x1.meta
+still present: <case>/wt
+
+ok - missing lsof with an unreadable /proc refuses teardown rather than reading as no process left
+### fm-teardown.sh task-x1 with real MSYS /proc, no lsof, sleeper pid=12712 in worktree: exit=0
+teardown: reaping leaked worktree process(es) for task-x1:
+  pid=12712 cmd=sleep 300
+fm-remote-job-reap-orphans: cannot scan this account's processes for remote job workers
+
+ok - missing lsof with usable /proc reaps a worktree-rooted process and reports pid plus command line
+ok - a leaked descendant process rooted under the task's worktree is reaped by teardown, not left surviving
+ok - a directory name that spells a scan record cannot make teardown reap a process outside the worktree
+ok - an erroring lsof scan refuses teardown and preserves the task
