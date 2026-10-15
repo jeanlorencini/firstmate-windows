@@ -2673,7 +2673,12 @@ while :; do
   # status lines before this cycle can exit on a wake. Off costs one file test.
   [ ! -e "$CONFIG/fleet-ledger" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" capture || true
 
-  if [ "$(age_of "$STATE/home-summary.json")" -ge "$HOME_SUMMARY_INTERVAL" ]; then
+  # A failed publication never freshens the ledger, so without the failure
+  # log's age this retried on every poll: the refresh lock stayed held back to
+  # back and every waiting refresher (spawn, teardown) queued behind it. Retry
+  # once per interval instead.
+  if [ "$(age_of "$STATE/home-summary.json")" -ge "$HOME_SUMMARY_INTERVAL" ] &&
+    [ "$(age_of "$STATE/.home-summary-refresh.log")" -ge "$HOME_SUMMARY_INTERVAL" ]; then
     home_summary_refresh_detached
   fi
 

@@ -309,6 +309,55 @@ wait "$WATCH_PID" >/dev/null 2>&1 || true
 WATCH_PID=
 pass "live watcher cadence bounds publication staleness without signals"
 
+# A failed publication leaves the ledger stale, so the watcher retried on every
+# poll and kept the refresh lock held back to back; every waiting refresher
+# (spawn, teardown) queued behind it. It now waits one interval after a failure.
+BACKOFF_HOME="$TMP_ROOT/backoff-home"
+mkdir -p "$BACKOFF_HOME/state" "$BACKOFF_HOME/data" "$BACKOFF_HOME/config" \
+  "$BACKOFF_HOME/projects"
+printf '# Seeded Firstmate home\n' > "$BACKOFF_HOME/AGENTS.md"
+printf 'backoff\n' > "$BACKOFF_HOME/.fm-secondmate-home"
+printf '## In flight\n\n## Queued\n\n## Done\n' > "$BACKOFF_HOME/data/backlog.md"
+printf '[%s] refresh exceeded its 60-second deadline\n' "$NOW_THREE" \
+  > "$BACKOFF_HOME/state/.home-summary-refresh.log"
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$BACKOFF_HOME" \
+  FM_SNAPSHOT_NOW="$NOW_THREE" FM_SNAPSHOT_NOW_EPOCH="$EPOCH_THREE" \
+  FM_POLL=1 FM_HOME_SUMMARY_INTERVAL=30 FM_SIGNAL_GRACE=0 \
+  FM_CHECK_INTERVAL=9999999 FM_HEARTBEAT=9999999 \
+  "$WATCH" > "$TMP_ROOT/backoff-watch.out" 2> "$TMP_ROOT/backoff-watch.err" &
+WATCH_PID=$!
+i=0
+while [ ! -e "$BACKOFF_HOME/state/.last-watcher-beat" ] && [ "$i" -lt 200 ]; do
+  kill -0 "$WATCH_PID" 2>/dev/null || break
+  sleep 0.05
+  i=$((i + 1))
+done
+[ -e "$BACKOFF_HOME/state/.last-watcher-beat" ] \
+  || fail "the backoff watcher did not complete its initial cycle"
+i=0
+while [ "$i" -lt 80 ]; do
+  [ ! -e "$BACKOFF_HOME/state/.home-summary-refresh.lock" ] \
+    && [ ! -L "$BACKOFF_HOME/state/.home-summary-refresh.lock" ] \
+    && [ ! -e "$BACKOFF_HOME/state/home-summary.json" ] \
+    || fail "the watcher retried a publication that failed less than one interval ago"
+  sleep 0.05
+  i=$((i + 1))
+done
+touch -t 200001010000 "$BACKOFF_HOME/state/.home-summary-refresh.log"
+i=0
+while [ ! -e "$BACKOFF_HOME/state/home-summary.json" ]; do
+  kill -0 "$WATCH_PID" 2>/dev/null \
+    || fail "the backoff watcher exited before retrying the publication"
+  [ "$i" -lt 300 ] \
+    || fail "the watcher did not retry the publication once the interval passed"
+  sleep 0.1
+  i=$((i + 1))
+done
+kill "$WATCH_PID" >/dev/null 2>&1 || true
+wait "$WATCH_PID" >/dev/null 2>&1 || true
+WATCH_PID=
+pass "the watcher waits one interval after a failed publication before retrying"
+
 # Consumer boundary: first serialize behind any watcher-started publication,
 # then replace the ledger with a structurally complete but semantically false
 # state. The default parent snapshot must consume that publication rather than

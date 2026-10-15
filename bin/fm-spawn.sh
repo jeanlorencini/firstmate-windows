@@ -1241,7 +1241,10 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
-  [ -z "$SPAWN_HOME_SUMMARY_PID" ] || wait "$SPAWN_HOME_SUMMARY_PID" || true
+  if [ -n "$SPAWN_HOME_SUMMARY_PID" ]; then
+    wait "$SPAWN_HOME_SUMMARY_PID" || true
+    spawn_stage home-summary-waited
+  fi
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] &&
     [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] &&
     [ -n "$SPAWN_META_TMP" ] &&
@@ -5153,11 +5156,20 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   SPAWN_TASK_SET_LOCK_HELD=0
   fm_lock_release "$SPAWN_TASK_SET_LOCK"
 fi
-# The summary must name this task before the spawn returns, but nothing below
-# reads it, so it is computed alongside launch delivery and the backlog commit,
-# and spawn_abort_cleanup waits for it on every exit.
-"$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort </dev/null &
-SPAWN_HOME_SUMMARY_PID=$!
+# A secondmate home's parent reads this summary, so there it must name this
+# task before the spawn returns; nothing below reads it, so it is computed
+# alongside launch delivery and the backlog commit, and spawn_abort_cleanup
+# waits for it on every exit. A home with neither secondmate marker has no such
+# reader, and waiting there held every dispatch behind the watcher's in-flight
+# publication plus this one, up to the refresh deadline: start it detached and
+# skip it while another publication runs (the watcher republishes later).
+if [ -e "$FM_HOME/$SUB_HOME_MARKER" ] || [ -L "$FM_HOME/$SUB_HOME_MARKER" ] ||
+  [ -e "$FM_HOME/.fm-secondmate-parent" ] || [ -L "$FM_HOME/.fm-secondmate-parent" ]; then
+  "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort </dev/null &
+  SPAWN_HOME_SUMMARY_PID=$!
+else
+  FM_HOME_SUMMARY_IF_IDLE=1 "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort </dev/null >/dev/null 2>&1 &
+fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
@@ -5475,6 +5487,7 @@ if ! (umask 077 && printf '%s\n' "$LAUNCH" >"$LAUNCH_STAGE" &&
   echo "error: could not stage the launch command at $LAUNCH_FILE" >&2
   exit 1
 fi
+spawn_stage launch-start
 sleep 0.3
 SPAWN_LAUNCH_SENT=1
 if [ "$BACKEND" = herdr ]; then
@@ -5580,6 +5593,7 @@ if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=1
 fi
+spawn_stage launch-delivered
 SPAWN_DEFERRED_SIGNAL=
 if [ "$BACKLOG_TRANSITION" = 1 ]; then
   trap 'SPAWN_DEFERRED_SIGNAL=HUP' HUP

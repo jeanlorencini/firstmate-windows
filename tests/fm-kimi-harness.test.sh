@@ -716,7 +716,7 @@ test_kimi_unconfirmed_delivery_fails_loudly() {
 }
 
 test_kimi_readiness_gate_precedes_pointer() {
-  local id rec out rc
+  local id rec out rc i
   id=kimi-not-ready-z3
   rec=$(make_spawn_case not-ready "$id")
   read_spawn_record "$rec"
@@ -727,9 +727,15 @@ test_kimi_readiness_gate_precedes_pointer() {
   assert_contains "$out" "kimi did not show a verified ready signal" \
     "kimi readiness failure lacked a loud diagnostic"
   [ ! -s "$CASE_DIR/pointer.log" ] || fail "kimi pointer was sent before readiness"
-  jq -e --arg id "$id" 'any(.endpoints[]; .id == $id)' \
-    "$HOME_DIR/state/home-summary.json" >/dev/null \
-    || fail "kimi readiness failure omitted its durable endpoint from the home summary"
+  # A home with no secondmate marker publishes its summary detached.
+  i=0
+  until jq -e --arg id "$id" 'any(.endpoints[]; .id == $id)' \
+    "$HOME_DIR/state/home-summary.json" >/dev/null 2>&1; do
+    [ "$i" -lt 600 ] \
+      || fail "kimi readiness failure omitted its durable endpoint from the home summary"
+    sleep 0.2
+    i=$((i + 1))
+  done
   pass "fm-spawn: kimi never sends the brief pointer before an observable ready signal"
 }
 
