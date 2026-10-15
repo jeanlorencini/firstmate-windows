@@ -32,6 +32,8 @@ export interface AsyncExecResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  /** True only when the deadline killed the child. */
+  timedOut: boolean;
 }
 
 export interface AsyncExecOptions {
@@ -120,11 +122,11 @@ export function runCommandAsync(
     const maxBuffer = options.maxBuffer ?? DEFAULT_MAX_BUFFER;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
-    const finish = (status: number | null, detail = ""): void => {
+    const finish = (status: number | null, detail = "", timedOut = false): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ status, stdout, stderr: detail ? `${stderr}${detail}` : stderr });
+      resolve({ status, stdout, stderr: detail ? `${stderr}${detail}` : stderr, timedOut });
     };
     let child: ChildProcess;
     try {
@@ -146,7 +148,7 @@ export function runCommandAsync(
       // could hold the stdout pipe open and turn the bound back into a hang.
       child.stdout?.destroy();
       child.stderr?.destroy();
-      finish(null, `${command} ${args[0] ?? ""} timed out after ${timeoutMs} ms; its process tree was killed`);
+      finish(null, `${command} ${args[0] ?? ""} timed out after ${timeoutMs} ms; its process tree was killed`, true);
     }, timeoutMs);
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {

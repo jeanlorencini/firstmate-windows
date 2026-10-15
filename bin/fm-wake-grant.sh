@@ -36,8 +36,13 @@ case "${1:-}" in
     [ "$#" -eq 3 ] || exit 2
     case "$pid" in ''|*[!0-9]*|1) exit 2 ;; esac
     case "$generation" in ''|*[!A-Za-z0-9._-]*) exit 2 ;; esac
-    identity=$(fm_pid_identity "$pid" 2>/dev/null) || exit 1
-    [ -n "$identity" ] || exit 1
+    # Without a readable identity no owner record is written, so a later
+    # recycled pid can never inherit branch authority; say why loudly.
+    identity=$(fm_pid_identity "$pid" 2>/dev/null) || identity=
+    if [ -z "$identity" ]; then
+      echo "error: cannot establish the process identity of pid $pid; on Windows, start Pi from Git Bash after sourcing platform/windows/env.sh" >&2
+      exit 1
+    fi
     TMP=$(mktemp "$STATE/.branch-eligible-owner.tmp.XXXXXX") || exit 1
     printf '%s\n%s\n%s\n%s\n' fm-branch-eligible-owner-v1 "$pid" "$identity" "$generation" > "$TMP" || exit 1
     chmod 0600 "$TMP" || exit 1

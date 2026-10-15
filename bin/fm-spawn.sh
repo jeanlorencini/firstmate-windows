@@ -1524,6 +1524,24 @@ fi
 spawn_stage() { # <stage>
   printf '%s %s\n' "${EPOCHREALTIME:-$(date +%s)}" "$1" >>"$STATE/$ID.spawn-stages" 2>/dev/null || true
 }
+# Read-only view of the Treehouse pools holding this project's worktrees:
+# "<pool>:mtime=<state mtime>,owned=<slot names with a live owner>" each. A
+# state that did not change across `treehouse get` says Treehouse never took a
+# slot. Never runs treehouse and never writes the pool.
+spawn_treehouse_pool_snapshot() {
+  local line pool seen=' ' out=''
+  while IFS= read -r line; do
+    case "$line" in "worktree "*) ;; *) continue ;; esac
+    pool=${line#worktree }
+    pool=${pool%/*}
+    pool=${pool%/*}
+    case "$seen" in *" $pool "*) continue ;; esac
+    seen="$seen$pool "
+    [ -f "$pool/treehouse-state.json" ] || continue
+    out="$out ${pool##*/}:mtime=$(fm_path_mtime "$pool/treehouse-state.json"),owned=$(jq -r '[.worktrees[]? | select(.owner_pid) | .name] | join("+")' "$pool/treehouse-state.json" 2>/dev/null)"
+  done < <(git -C "$PROJ_ABS" worktree list --porcelain 2>/dev/null || true)
+  printf 'pools=%s' "${out# }"
+}
 spawn_stage "start relaunch=$RELAUNCH kind=$KIND"
 # Role partition: spawning NEW work is MAIN-owned while attended. A relaunch of
 # an existing task is legitimate branch recovery (fm-control drives it through
@@ -4309,8 +4327,13 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
-  spawn_stage treehouse-get-sent
+  spawn_stage "treehouse-pool-before $(spawn_treehouse_pool_snapshot)"
+  spawn_send_text_line "$WT_TARGET" 'treehouse get' || {
+    rc=$?
+    spawn_stage "treehouse-get-send-failed rc=$rc"
+    exit "$rc"
+  }
+  spawn_stage "treehouse-get-sent rc=0"
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -4347,7 +4370,9 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   candidate=""
   last_seen=""
   last_reason="the pane reported no path"
+  polls=0
   for _ in $(seq 1 60); do
+    polls=$((polls + 1))
     p=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$p" ] || last_seen="$p"
     if [ -n "$p" ] && spawn_worktree_isolated "$p"; then
@@ -4366,6 +4391,18 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   done
   if [ -z "$WT" ]; then
     echo "error: treehouse get did not enter an isolated worktree within 60s (last seen '${last_seen:-none}': $last_reason; spawning project '$PROJ_ABS'); inspect window $T" >&2
+    # Which hypothesis stays plausible: a pool state that never changed points
+    # at a command that did not run or did not reach Treehouse; a changed pool
+    # with a non-shell foreground points at Treehouse still working; a changed
+    # pool with a shell foreground and the project cwd points at the cwd read.
+    # Indications only, read before the endpoint cleanup below closes the pane.
+    # The foreground is a category (agent|shell|other|unreadable), never argv.
+    foreground_state=unknown
+    if [ "$BACKEND" = herdr ] && fm_backend_herdr_parse_target "$T" 2>/dev/null; then
+      foreground_state=$(fm_backend_herdr_pane_process_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null) ||
+        foreground_state=unreadable
+    fi
+    spawn_stage "worktree-timeout polls=$polls herdr-cwd=${last_seen:-none} foreground=${foreground_state:-unreadable} $(spawn_treehouse_pool_snapshot)"
     # Projection abort cleanup refuses a focus-unsafe close when pane get cannot
     # verify the exact pane, which left orphan Herdr panes after this timeout.
     # The ordinary endpoint kill falls back to an explicit close, so use it here
@@ -4380,7 +4417,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     if [ "$BACKEND" = herdr ] && declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null; then
       if fm_backend_herdr_endpoint_confirmed_gone "$T"; then endpoint_gone=yes; else endpoint_gone=no; fi
     fi
-    spawn_stage "worktree-timeout endpoint-gone=$endpoint_gone"
+    spawn_stage "worktree-timeout-cleanup endpoint-gone=$endpoint_gone"
     [ "$endpoint_gone" != no ] ||
       echo "error: the pane $T of task $ID is still open after this failure; close it before relaunching" >&2
     exit 1

@@ -631,8 +631,12 @@ function dispatch(message, projects, heartbeat, eligible) {
   bus.emit("fm-branch-supervision:dispatch", offer);
   return offer;
 }
+// An upper bound, not a wait: settle returns at the first poll that sees the
+// condition. Git Bash on Windows runs each bin script several times slower,
+// so the same awaited chain needs up to 30 s there instead of 2.5 s.
+const SETTLE_POLLS = process.platform === "win32" ? 3000 : 250;
 async function settle(predicate, label) {
-  for (let i = 0; i < 250; i += 1) {
+  for (let i = 0; i < SETTLE_POLLS; i += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -4193,7 +4197,7 @@ const { runCommandAsync } = await import(pathToFileURL(process.env.LIB).href);
 const started = Date.now();
 const result = await runCommandAsync("bash", ["-c", `sleep 60 & echo $! > "${process.env.PIDFILE}"; wait`], { timeoutMs: 1500 });
 const elapsed = Date.now() - started;
-if (result.status !== null) throw new Error(`timed-out child reported status ${result.status}`);
+if (result.status !== null || result.timedOut !== true) throw new Error(`timed-out child reported ${JSON.stringify(result)}`);
 if (!result.stderr.includes("timed out after 1500 ms")) throw new Error(`no timeout error: ${result.stderr}`);
 if (elapsed > 10000) throw new Error(`timeout settled after ${elapsed} ms`);
 const pid = readFileSync(process.env.PIDFILE, "utf8").trim();
@@ -4204,7 +4208,7 @@ for (let i = 0; i < 50 && alive; i += 1) {
 }
 if (alive) throw new Error(`grandchild ${pid} survived the timeout`);
 const quick = await runCommandAsync("bash", ["-c", "echo ok"], { timeoutMs: 15000 });
-if (quick.status !== 0 || quick.stdout.trim() !== "ok") throw new Error(`bounded quick call failed: ${JSON.stringify(quick)}`);
+if (quick.status !== 0 || quick.timedOut || quick.stdout.trim() !== "ok") throw new Error(`bounded quick call failed: ${JSON.stringify(quick)}`);
 process.exit(0);
 EOF
   status=$?
@@ -4234,6 +4238,7 @@ SH
 #!/usr/bin/env bash
 if [ "$1" = activate ] && [ ! -e "$FM_TEST_FAIL_MARKER" ]; then
   : > "$FM_TEST_FAIL_MARKER"
+  echo "error: synthetic activation refusal" >&2
   exit 1
 fi
 exec bash "${BASH_SOURCE[0]%/*}/fm-wake-grant.real.sh" "$@"
@@ -4245,23 +4250,50 @@ SH
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { fire, home, defaultSessionCtx }; })()`);
 const { fire, home, defaultSessionCtx } = globalThis.__t;
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 const releases = () => (existsSync(`${home}/release.log`) ? readFileSync(`${home}/release.log`, "utf8").trim().split("\n").length : 0);
-await fire("session_start", {}, defaultSessionCtx);
+const diagnostics = () => JSON.parse(readFileSync(`${home}/state/.pi-branch-diagnostics.json`, "utf8"));
+const notices = [];
+const ctx = { ...defaultSessionCtx, ui: { notify: (message, type) => notices.push({ message, type }) } };
+await fire("session_start", {}, ctx);
 if (existsSync(`${home}/state/.pi-branch-extension-loaded`)) throw new Error("failed activation wrote the marker");
 if (releases() !== 1) throw new Error(`first boundary ran ${releases()} lease releases, expected 1`);
-await fire("turn_end", {}, defaultSessionCtx);
+const failed = diagnostics();
+if (failed.counts?.activation?.count !== 1) throw new Error(`activation failure not counted: ${JSON.stringify(failed)}`);
+if (failed.last?.error !== "error: synthetic activation refusal") throw new Error(`activation reason not kept: ${JSON.stringify(failed)}`);
+if (notices.length !== 1 || notices[0].type !== "warning" || !notices[0].message.includes("synthetic activation refusal")) {
+  throw new Error(`failed activation did not warn the captain exactly once: ${JSON.stringify(notices)}`);
+}
+await fire("turn_end", {}, ctx);
 if (!existsSync(`${home}/state/.pi-branch-extension-loaded`)) throw new Error("next boundary did not retry the failed activation");
 if (releases() !== 1) throw new Error(`activation retry repeated the completed lease release (${releases()} runs)`);
-await fire("turn_end", {}, defaultSessionCtx);
+if (diagnostics().counts?.activation?.count !== 1) throw new Error("a later success cleared or changed the failure count");
+await fire("turn_end", {}, ctx);
 if (releases() !== 1) throw new Error(`an activated generation released leases again (${releases()} runs)`);
+if (notices.length !== 1) throw new Error(`activation warning repeated: ${JSON.stringify(notices)}`);
+// An identity that cannot be read is refused with its reason, and no owner is recorded.
+mkdirSync(`${home}/refused-state`, { recursive: true });
+const refused = spawnSync("bash", [`${process.env.FM_ROOT_OVERRIDE}/bin/fm-wake-grant.real.sh`, "activate", "2147483646", "9"], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    FM_STATE_OVERRIDE: `${home}/refused-state`,
+    FM_WAKE_QUEUE: `${home}/refused-state/.wake-queue`,
+    FM_WAKE_QUEUE_LOCK: `${home}/refused-state/.wake-queue.lock`,
+  },
+});
+if (refused.status !== 1 || !refused.stderr.includes("cannot establish the process identity of pid 2147483646")) {
+  throw new Error(`unreadable identity was not refused with its reason: ${refused.status} ${refused.stderr}`);
+}
+if (existsSync(`${home}/refused-state/.branch-eligible-owner`)) throw new Error("an unreadable identity recorded an owner");
 process.exit(0);
 EOF
   status=$?
   out=$(cat "$TMP_ROOT/node-output")
   expect_code 0 "$status" "activation retry must not repeat a completed lease release: $out"
-  pass "a failed activation retries without repeating the completed lease release, once per generation"
+  pass "a failed activation is counted, warned once, retried without repeating the lease release, and an unreadable identity is refused with its reason"
 }
 
 test_cold_start_activates_after_lock_acquisition() {
