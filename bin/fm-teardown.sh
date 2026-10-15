@@ -2052,7 +2052,8 @@ conclude_task_no_mistakes_run() {  # <worktree>
 # DIRECTORY is exactly $1 or under it. Prefer one bounded system-wide
 # `lsof -a -d cwd` scan (never the recursive +D file-tree walk, which lsof
 # itself documents as slow). When lsof is absent, walk `$FM_PROC_ROOT_OVERRIDE`
-# or `/proc/*/cwd` the same way. Never $$ (this script's own pid). Empty
+# or `/proc/*/cwd` the same way. Never $$ (this script's own pid), though the
+# /proc walk fails when it cannot read $$'s own cwd. Empty
 # output when nothing matches; failure means the scan could not establish a
 # safe result (caller may fall back to the backend process-group path).
 pids_with_cwd_under_lsof() {  # <canonical-dir>
@@ -2085,13 +2086,12 @@ EOF
 }
 
 pids_with_cwd_under_proc() {  # <canonical-dir> <proc-root>
-  local dir=$1 proc_root=$2 entry pid path path_canon
+  local dir=$1 proc_root=$2 entry pid path path_canon self=0
   [ -d "$proc_root" ] || return 1
   for entry in "$proc_root"/[0-9]*; do
     [ -e "$entry" ] || continue
     pid=${entry##*/}
     case "$pid" in ''|*[!0-9]*) continue ;; esac
-    [ "$pid" = "$$" ] && continue
     if path=$(readlink "$entry/cwd" 2>/dev/null); then
       :
     elif [ -e "$entry/cwd" ]; then
@@ -2099,12 +2099,17 @@ pids_with_cwd_under_proc() {  # <canonical-dir> <proc-root>
     else
       continue
     fi
+    if [ "$pid" = "$$" ]; then
+      self=1
+      continue
+    fi
     path_canon=$(cd "$path" 2>/dev/null && pwd -P) || continue
     case "$path_canon" in
       "$dir"|"$dir"/*) printf '%s\n' "$pid" ;;
     esac
   done
-  return 0
+  # An unreadable /proc scans empty, which must not read as no process left.
+  [ "$self" = 1 ]
 }
 
 task_cwd_pid_scan_available() {

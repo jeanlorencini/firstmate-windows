@@ -3883,6 +3883,39 @@ test_lsof_absent_proc_cwd_fallback_reaps_and_reports() {
   pass "missing lsof with usable /proc reaps a worktree-rooted process and reports pid plus command line"
 }
 
+test_lsof_absent_unreadable_proc_refuses_before_removal() {
+  local case_dir rc path_without_lsof
+  case_dir=$(make_case unreadable-proc-refusal)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  path_without_lsof=$PATH
+  if command -v lsof >/dev/null 2>&1; then
+    path_without_lsof=$(make_path_without_lsof "$case_dir")
+  fi
+  PATH="$path_without_lsof" command -v lsof >/dev/null 2>&1 \
+    && fail "unreadable-proc-refusal: fixture path unexpectedly exposes lsof"
+  # A /proc that exists but shows no readable process, not even teardown's own.
+  mkdir -p "$case_dir/empty-proc"
+  cat > "$case_dir/fakebin/treehouse" <<EOF
+#!/usr/bin/env bash
+printf 'return\n' >> "$case_dir/treehouse.log"
+EOF
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+  FM_PROC_ROOT_OVERRIDE="$case_dir/empty-proc" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "unreadable-proc-refusal: teardown should refuse"
+  assert_grep "REFUSED: cannot determine leaked processes under $case_dir/wt for task-x1 (proc failed)" "$case_dir/stderr" \
+    "unreadable-proc-refusal: teardown did not explain the /proc refusal"
+  assert_present "$case_dir/wt" "unreadable-proc-refusal: teardown removed the worktree"
+  assert_present "$case_dir/state/task-x1.meta" "unreadable-proc-refusal: teardown removed task metadata"
+  assert_absent "$case_dir/treehouse.log" "unreadable-proc-refusal: teardown returned the worktree"
+  pass "missing lsof with an unreadable /proc refuses teardown rather than reading as no process left"
+}
+
 test_lsof_error_refuses_before_removal() {
   local case_dir rc
   case_dir=$(make_case lsof-error-refusal)
@@ -4456,6 +4489,7 @@ test_crafted_cwd_cannot_forge_a_reap
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_absent_proc_cwd_fallback_reaps_and_reports
+test_lsof_absent_unreadable_proc_refuses_before_removal
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped
