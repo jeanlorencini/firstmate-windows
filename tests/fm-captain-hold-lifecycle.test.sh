@@ -4034,6 +4034,13 @@ test_retained_body_keeps_its_utf8_bytes() {
   pass "cleanup preserves every byte of a retained body's non-ASCII characters"
 }
 
+# FM_TEST_ONLY=<test_function> runs that one case alone; unset runs the whole file.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  declare -F "$FM_TEST_ONLY" >/dev/null || fail "unknown test function: $FM_TEST_ONLY"
+  "$FM_TEST_ONLY"
+  exit 0
+fi
+
 test_uninventoried_report_decision_refuses_completion
 test_hold_decodes_a_bare_scalar_body_without_the_nonref_default
 test_retained_body_keeps_its_utf8_bytes

@@ -3370,6 +3370,13 @@ SH
   pass "watch liveness: an unreachable remote secondmate is probed, preserved, and never failed over"
 }
 
+# FM_TEST_ONLY=<test_function> runs that one case alone; unset runs the whole file.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  declare -F "$FM_TEST_ONLY" >/dev/null || fail "unknown test function: $FM_TEST_ONLY"
+  "$FM_TEST_ONLY"
+  exit 0
+fi
+
 test_self_held_lock_reclaims_instead_of_deadlocking
 test_subshell_lock_ownership_without_bashpid
 test_bounded_lock_handoff_after_contention

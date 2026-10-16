@@ -2164,6 +2164,13 @@ test_lint_runs_the_secret_scan_and_explicit_paths_skip_it() {
   pass "fm-lint.sh runs the secret scan on its default path and not for explicit paths"
 }
 
+# FM_TEST_ONLY=<test_function> runs that one case alone; unset runs the whole file.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  declare -F "$FM_TEST_ONLY" >/dev/null || fail "unknown test function: $FM_TEST_ONLY"
+  "$FM_TEST_ONLY"
+  exit 0
+fi
+
 test_help_reports_the_complete_interface
 test_list_files_reports_the_shell_inventory
 test_canonical_partitions_preserve_full_lint

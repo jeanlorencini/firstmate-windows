@@ -1553,12 +1553,6 @@ SH
   done
 }
 
-test_launch_environment_allowlist
-test_launch_environment_invalid_config_refuses
-test_launch_environment_inaccessible_config_refuses
-test_launch_environment_inherited_by_secondmate
-test_launch_environment_inheritance_preserves_on_source_errors
-
 test_worker_launch_delivers_role_scope() {
   local rec id out launch kind prompt envelope encoded brief_kind brief content first_line role_line task_line inbox
   for brief_kind in heading legacy scaffold; do
@@ -1813,6 +1807,18 @@ test_non_claude_harness_ignores_claude_permission_mode() {
   pass "config/claude-permission-mode changes claude launches only"
 }
 
+# FM_TEST_ONLY=<test_function> runs that one case alone; unset runs the whole file.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  declare -F "$FM_TEST_ONLY" >/dev/null || fail "unknown test function: $FM_TEST_ONLY"
+  "$FM_TEST_ONLY"
+  exit 0
+fi
+
+test_launch_environment_allowlist
+test_launch_environment_invalid_config_refuses
+test_launch_environment_inaccessible_config_refuses
+test_launch_environment_inherited_by_secondmate
+test_launch_environment_inheritance_preserves_on_source_errors
 test_worker_launch_delivers_role_scope
 test_no_profile_keeps_claude_profile_defaults
 test_claude_launch_brief_publishes_record_doorbell
